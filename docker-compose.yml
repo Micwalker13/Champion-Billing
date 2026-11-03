@@ -1,4 +1,4 @@
-# docker compose up -d   →  app on http://localhost:3000 (put it behind HTTPS before use outside the office network)
+# docker compose up -d   →  https://$DOMAIN (Caddy obtains the certificate automatically)
 services:
   db:
     image: postgres:16
@@ -19,6 +19,15 @@ services:
       NODE_ENV: production
     ports: ["127.0.0.1:3000:3000"]
 
+  caddy:
+    image: caddy:2.8
+    restart: unless-stopped
+    depends_on: [app]
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env, e.g. billing.championequipmentco.com}
+    ports: ["80:80", "443:443"]
+    volumes: ["./deploy/Caddyfile:/etc/caddy/Caddyfile:ro", "caddy_data:/data", "caddy_config:/config"]
+
   backup:
     image: postgres:16
     restart: unless-stopped
@@ -34,3 +43,5 @@ services:
 
 volumes:
   pgdata:
+  caddy_data:
+  caddy_config:
