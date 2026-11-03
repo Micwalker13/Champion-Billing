@@ -149,7 +149,11 @@ export const rentalSchema = z.object({
 export async function createRental(user: SessionUser, input: unknown) {
   requirePerm(user, "edit_records");
   const r = rentalSchema.parse(input);
-  return tx(async (db) => {
+  return tx((db) => createRentalInTx(db, user, r));
+}
+
+export async function createRentalInTx(db: Db, user: SessionUser, r: z.infer<typeof rentalSchema>) {
+  {
     const equipment = await one(`SELECT * FROM equipment WHERE unit_number=$1`, [r.unit_number], db);
     if (!equipment) throw new AppError(`Equipment unit ${r.unit_number} does not exist. Add it under Equipment first.`);
     const open = await one(`SELECT l.id, c.contract_number FROM rental_contract_lines l JOIN rental_contracts c ON c.id=l.contract_id
@@ -177,7 +181,7 @@ export async function createRental(user: SessionUser, input: unknown) {
     }
     await audit(db, user.id, "create", "rental_contract", contract.id, null, { contract, line, fees: r.fees });
     return { contract, line };
-  });
+  }
 }
 
 const STATUS_FLOW: Record<string, string[]> = {

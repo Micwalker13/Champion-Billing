@@ -10,6 +10,7 @@ writes to it, or changes anything in it.
 | Area | What you get |
 |---|---|
 | Rentals | Continuous rental agreements per unit (contract #, customer, unit, serial, job, work order, jobsite, rate, billing method, terms, delivery/pickup, fees, notes, original agreement upload). Status: Active → Off-rent → Returned → Closed. Invoicing never closes or restarts a rental. |
+| Rental bulk load | Upload a spreadsheet of rentals already running in Quipli (contract, unit, start date, rate, job, work order, jobsite, "Bill From" or "Billed Through"). Preview flags missing fields, bad dates and rates, units already on rent, and duplicate contracts. All rows are created in one transaction, or none are. Missing equipment records are created. |
 | Monthly POs | Unlimited POs per rental, one per billing period. Each assignment records who and when, and is permanent: corrections supersede it with a reason, and the database refuses deletes and rewrites. Customer-specific format rules (RPM: `[456]` followed by 5 digits), expiration and validity dates, uniqueness per machine and month. |
 | Bulk import | CSV or Excel upload → preview → automatic matching by unit number → flags (unknown or duplicate unit, missing or invalid PO, duplicate PO, PO already used, missing or conflicting job/WO, returned unit, PO total vs calculated total, active rentals missing from the file) → correct rows → approve or skip each row → apply **all approved rows in one transaction**. The same file can never be applied twice. Import history is permanent. |
 | Billing | Deterministic engine: calendar month (real month lengths, leap years), daily, weekly, 28-day and 30-day cycles, configurable per customer and per contract. Partial periods follow a proration policy that must be **explicitly approved**. Until then they are blocked. A "bill in this system from" date prevents double-billing days already invoiced in Quipli. |
@@ -65,7 +66,7 @@ It restores into a temporary database, compares invoice, PO and audit counts, an
 
 ```bash
 createdb champion_test
-npm test          # 27 tests: billing engine unit tests + Champion's acceptance tests 1–10 on a real PostgreSQL
+npm test          # 31 tests: billing engine unit tests, rental bulk load + Champion's acceptance tests 1–10 on a real PostgreSQL
 ```
 
 `tests/acceptance.test.ts` is named test by test after section 15 of the requirements. It also covers permissions, concurrency, and proration being blocked until approved.

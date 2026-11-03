@@ -23,7 +23,7 @@ const HEADER_MAP: Record<string, keyof Omit<ParsedRow, "row_number" | "raw" | "p
 };
 const normHeader = (h: unknown) => String(h ?? "").toLowerCase().replace(/[\s_\-.]/g, "");
 
-function cellValue(v: any): unknown {
+export function cellValue(v: any): unknown {
   if (v == null) return null;
   if (typeof v === "object") {
     if ("result" in v) return v.result;          // formula
@@ -35,7 +35,8 @@ function cellValue(v: any): unknown {
 }
 
 /** Parse an RPM PO list (CSV or XLSX). Headers are matched flexibly; unknown columns are kept in raw. */
-export async function parsePoFile(filename: string, content: Buffer): Promise<ParsedRow[]> {
+/** Read the first worksheet of an .xlsx, or a .csv, into rows of cell values. */
+export async function readTable(filename: string, content: Buffer): Promise<unknown[][]> {
   let table: unknown[][];
   if (/\.xlsx$/i.test(filename)) {
     const wb = new ExcelJS.Workbook();
@@ -53,6 +54,11 @@ export async function parsePoFile(filename: string, content: Buffer): Promise<Pa
     table = parsed.data;
   } else throw new AppError("Upload a .csv or .xlsx file.");
 
+  return table;
+}
+
+export async function parsePoFile(filename: string, content: Buffer): Promise<ParsedRow[]> {
+  const table = await readTable(filename, content);
   const headerIdx = table.findIndex((r) => r.some((c) => HEADER_MAP[normHeader(c)] === "po_number") && r.some((c) => HEADER_MAP[normHeader(c)] === "unit_number"));
   if (headerIdx < 0) throw new AppError("Could not find the header row. The file needs at least 'PO Number' and 'Unit' columns.");
   const headers = table[headerIdx].map((h) => String(h ?? "").trim());

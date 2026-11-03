@@ -124,3 +124,4 @@ details > summary { cursor: pointer; font-weight: 600; }
   .actions > form, .actions > a { max-width: 100%; }
   .topbar h1 { font-size: 19px; }
 }
+button:disabled, button:disabled:hover { opacity: .45; cursor: not-allowed; }

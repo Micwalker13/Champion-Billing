@@ -18,7 +18,7 @@ export default async function Rentals({ searchParams }: { searchParams: Promise<
   return (
     <>
       <div className="topbar"><div><h1>Rentals</h1><div className="muted">Continuous rental agreements. Monthly invoices never close or restart them.</div></div>
-        {can(user, "edit_records") && <a className="btn btn-primary" href="/rentals/new">New rental</a>}</div>
+        {can(user, "edit_records") && <div className="actions"><a className="btn" href="/rentals/load">Bulk load from spreadsheet</a><a className="btn btn-primary" href="/rentals/new">New rental</a></div>}</div>
       <Flash sp={sp} />
       <form className="card row" method="get">
         <div className="field"><label>Customer</label><select name="customer" defaultValue={sp.customer ?? ""}><option value="">All</option>{customers.map((c: any) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></div>

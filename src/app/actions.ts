@@ -12,6 +12,7 @@ import { applyImportBatch, approveCleanRows, cancelImportBatch, createImportBatc
 import { updateCompanySettings } from "@/lib/services/settings";
 import { ProrationPolicy } from "@/lib/billing";
 import { q } from "@/lib/db";
+import { applyRentalBatch, cancelRentalBatch, uploadRentalFile } from "@/lib/services/rental-import";
 
 const str = (fd: FormData, k: string) => { const v = fd.get(k); return typeof v === "string" ? v : ""; };
 const bool = (fd: FormData, k: string) => fd.get(k) === "on" || fd.get(k) === "true";
@@ -255,4 +256,20 @@ export async function createUserAction(fd: FormData) {
 }
 export async function toggleUserAction(fd: FormData) {
   await run(fd, "/settings", async (u) => { requirePerm(u, "manage_users"); await setUserActive(u, str(fd, "id"), str(fd, "active") === "true"); return "User updated."; });
+}
+
+// ───────── Rental bulk load
+export async function uploadRentalFileAction(fd: FormData) {
+  await run(fd, "/rentals/load", async (u) => {
+    const file = fd.get("file");
+    if (!(file instanceof File) || file.size === 0) throw new Error("Choose a CSV or Excel file.");
+    const b = await uploadRentalFile(u, { customerId: str(fd, "customer_id"), filename: file.name, content: Buffer.from(await file.arrayBuffer()) });
+    return { to: `/rentals/load/${b.id}`, msg: "File read. Check every row below. Nothing has been created yet." };
+  });
+}
+export async function applyRentalBatchAction(fd: FormData) {
+  await run(fd, "/rentals/load", async (u) => { const n = await applyRentalBatch(u, str(fd, "batch_id")); return { to: "/rentals", msg: `${n} rental(s) created in one transaction.` }; });
+}
+export async function cancelRentalBatchAction(fd: FormData) {
+  await run(fd, "/rentals/load", async (u) => { await cancelRentalBatch(u, str(fd, "batch_id")); return { to: "/rentals/load", msg: "Load cancelled. Nothing was created." }; });
 }

@@ -7,6 +7,11 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ nam
   if (!(await getUser())) return NextResponse.json({ error: "Not signed in" }, { status: 401 });
   const { name } = await params;
   if (name === "rpm-po-2026-11.csv") return new NextResponse(rpmPoCsv(), { headers: { "Content-Type": "text/csv", "Content-Disposition": `attachment; filename="${name}"` } });
+  if (name === "rental-load-template.csv") {
+    const csv = "Contract,Unit,Description,Serial,Start Date,Bill From,Rate,Rate Basis,Job,Work Order,Jobsite,Jobsite Address,Quipli Reference,Notes\n" +
+      "CE-10025,MUR002101,Mini excavator 3.5T,SN12345,08/14/2026,11/01/2026,1924.25,monthly,5276,184139,RPM Job 5276,\"123 Main St, Houston TX\",Quipli order 10025,\n";
+    return new NextResponse(csv, { headers: { "Content-Type": "text/csv", "Content-Disposition": `attachment; filename="${name}"` } });
+  }
   if (name === "rpm-po-2026-11.xlsx") {
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet("POs");
