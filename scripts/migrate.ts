@@ -30,6 +30,6 @@ export async function migrate(connectionString = process.env.DATABASE_URL!) {
 }
 
 if (require.main === module) {
-  require("node:process").loadEnvFile?.(".env");
+  try { process.loadEnvFile(".env"); } catch { /* no .env: use the real environment */ }
   migrate().catch((e) => { console.error(e); process.exit(1); });
 }
