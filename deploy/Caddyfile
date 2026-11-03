@@ -1,0 +1,12 @@
+# Automatic HTTPS (Let's Encrypt) in front of the app. DOMAIN comes from .env.
+{$DOMAIN} {
+	encode gzip
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Robots-Tag "noindex, nofollow"
+	}
+	request_body {
+		max_size 25MB
+	}
+	reverse_proxy app:3000
+}
