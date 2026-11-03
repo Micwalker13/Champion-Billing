@@ -9,6 +9,7 @@
     "migrate": "tsx scripts/migrate.ts",
     "seed": "tsx scripts/seed.ts",
     "create-user": "tsx scripts/create-user.ts",
+    "setup-rpm": "tsx scripts/setup-rpm.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
