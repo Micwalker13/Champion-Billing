@@ -1,0 +1,36 @@
+# docker compose up -d   →  app on http://localhost:3000 (put it behind HTTPS before use outside the office network)
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: champion
+      POSTGRES_USER: champion
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U champion"], interval: 10s, retries: 5 }
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on: { db: { condition: service_healthy } }
+    environment:
+      DATABASE_URL: postgres://champion:${POSTGRES_PASSWORD}@db:5432/champion
+      NODE_ENV: production
+    ports: ["127.0.0.1:3000:3000"]
+
+  backup:
+    image: postgres:16
+    restart: unless-stopped
+    depends_on: { db: { condition: service_healthy } }
+    environment:
+      PGHOST: db
+      PGUSER: champion
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: champion
+      KEEP_DAYS: "35"
+    volumes: ["./backups:/backups", "./scripts:/scripts:ro"]
+    entrypoint: ["sh", "-c", "while true; do sh /scripts/backup.sh /backups; sleep 86400; done"]
+
+volumes:
+  pgdata:
