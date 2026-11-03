@@ -60,10 +60,10 @@ Open https://billing.championequipmentco.com and sign in. Add everyone else unde
 
 ## 6. Set it up for RPM (in the app)
 1. **Settings:** enter Champion's legal name, address and remit-to, plus the invoice prefix and next number. Then untick "placeholder".
-2. **Customers → add RPM xConstruction:**
-   - Set the billing address.
-   - Set the billing rules: calendar month, new PO every month, unique PO per machine, PO format `[456][0-9]{5}`, work order, job, jobsite and agreement required. Also set the tax rate and terms.
-   - Record the proration policy that matches Quipli.
+2. **RPM xConstruction:** on the server run `docker compose exec app npm run setup-rpm`. This creates RPM with all of its billing rules: calendar month, new six-digit PO per machine every month, and work order, job, jobsite and agreement required. Then, under **Customers → RPM xConstruction**:
+   - enter the billing address
+   - confirm the tax rate and terms, and untick "placeholder"
+   - record the proration policy that matches Quipli
 3. **Rentals → Bulk load from spreadsheet:** upload the 26 RPM rentals. Use **Bill From = 11/01/2026** for rentals Quipli already billed through October.
 4. On each rental, upload the signed original agreement (PDF).
 5. **PO imports:** upload RPM's November PO file, review it, then apply.
