@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev -p 3000",
     "build": "next build",
+    "vercel-build": "tsx scripts/migrate.ts && next build",
     "start": "next start -p 3000",
     "migrate": "tsx scripts/migrate.ts",
     "seed": "tsx scripts/seed.ts",

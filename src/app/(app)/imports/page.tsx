@@ -1,3 +1,5 @@
+import { FileInput } from "@/components/file-input";
+import { maxUploadMb } from "@/lib/limits";
 import { requireUser } from "@/lib/session";
 import { can } from "@/lib/permissions";
 import { one, q } from "@/lib/db";
@@ -22,7 +24,7 @@ export default async function Imports({ searchParams }: { searchParams: Promise<
         <div className="row">
           <div className="field"><label>Customer</label><select name="customer_id" defaultValue={sp.customer ?? rpm?.id}>{customers.map((c: any) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></div>
           <div className="field"><label>Billing month</label><input type="month" name="month" required defaultValue={sp.month ?? monthStart(todayCentral()).slice(0, 7)} /></div>
-          <div className="field" style={{ flexBasis: 260 }}><label>CSV or Excel file</label><input type="file" name="file" accept=".csv,.xlsx" required /></div>
+          <div className="field" style={{ flexBasis: 260 }}><label>CSV or Excel file</label><FileInput name="file" accept=".csv,.xlsx" maxMb={maxUploadMb()} required /></div>
           <button className="btn-primary">Upload &amp; preview</button>
         </div>
         <p className="small muted">Expected columns: PO Number, Unit, Work Order, Job, PO Total. Header names are matched flexibly. Sample files: <a href="/api/sample/rpm-po-2026-11.csv">CSV</a> · <a href="/api/sample/rpm-po-2026-11.xlsx">Excel</a></p>

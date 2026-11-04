@@ -107,7 +107,7 @@ export default async function InvoicePage({ params, searchParams }: { params: Pr
               <span className={`icon-${c.status}`} style={{ fontWeight: 700 }}>{ICON[c.status]}</span>
               <div>
                 <strong>{c.label}</strong> <span className="muted">· {c.message}</span>
-                {c.override && <div className="small" style={{ color: "var(--info)" }}>Override by {c.override.user_name} on {new Date(c.override.at).toLocaleDateString("en-US")}: “{c.override.reason}”</div>}
+                {c.override && <div className="small" style={{ color: "var(--info)" }}>Override by {c.override.user_name} on {new Date(c.override.at).toLocaleDateString("en-US", { timeZone: "America/Chicago" })}: “{c.override.reason}”</div>}
                 {!finalized && !c.override && (c.status === "fail" || c.status === "warn") && c.overridable && can(user, "override_validation") && (
                   <details><summary className="small">Record an authorized override</summary>
                     <form action={overrideAction} className="row" style={{ marginTop: 6 }}><H><input type="hidden" name="rule" value={c.rule} />

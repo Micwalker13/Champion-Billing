@@ -1,9 +1,11 @@
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { Client } from "pg";
+import { pgConfig } from "../src/lib/db";
 
 export async function migrate(connectionString = process.env.DATABASE_URL!) {
-  const client = new Client({ connectionString });
+  const { max: _max, idleTimeoutMillis: _idle, ...cfg } = pgConfig(connectionString);
+  const client = new Client(cfg);
   await client.connect();
   try {
     await client.query(`CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())`);
@@ -24,6 +26,8 @@ export async function migrate(connectionString = process.env.DATABASE_URL!) {
         throw e;
       }
     }
+    // Re-applied on every run so tables added by later migrations are covered too.
+    await client.query(readFileSync(path.join(__dirname, "..", "db", "hardening.sql"), "utf8"));
   } finally {
     await client.end();
   }
@@ -31,5 +35,11 @@ export async function migrate(connectionString = process.env.DATABASE_URL!) {
 
 if (require.main === module) {
   try { process.loadEnvFile(".env"); } catch { /* no .env: use the real environment */ }
+  // On Vercel only production deploys touch the database. Preview builds of unmerged
+  // branches must never change the live schema.
+  if (process.env.VERCEL && process.env.VERCEL_ENV !== "production") {
+    console.log(`Skipping migrations for a ${process.env.VERCEL_ENV} build.`);
+    process.exit(0);
+  }
   migrate().catch((e) => { console.error(e); process.exit(1); });
 }

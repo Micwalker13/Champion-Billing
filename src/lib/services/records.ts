@@ -1,3 +1,4 @@
+import { maxUploadMb } from "../limits";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { AppError, Db, audit, one, pool, q, tx } from "../db";
@@ -243,7 +244,7 @@ export async function updateRentalTerms(user: SessionUser, lineId: string, input
 export async function addContractDocument(user: SessionUser, contractId: string, file: { filename: string; mime: string; content: Buffer }) {
   requirePerm(user, "edit_records");
   if (file.content.length === 0) throw new AppError("The file is empty.");
-  if (file.content.length > 15 * 1024 * 1024) throw new AppError("Files must be under 15 MB.");
+  if (file.content.length > maxUploadMb() * 1024 * 1024) throw new AppError(`Files must be under ${maxUploadMb()} MB. For a large scan, save the PDF at a reduced size and upload it again.`);
   const allowed = ["application/pdf", "image/png", "image/jpeg"];
   if (!allowed.includes(file.mime)) throw new AppError("Upload the agreement as a PDF, PNG or JPG.");
   const sha = createHash("sha256").update(file.content).digest("hex");

@@ -1,3 +1,5 @@
+import { FileInput } from "@/components/file-input";
+import { maxUploadMb } from "@/lib/limits";
 import { requireUser } from "@/lib/session";
 import { q } from "@/lib/db";
 import { BILLING_METHOD_LABELS, RATE_BASIS_LABELS } from "@/lib/billing";
@@ -49,7 +51,7 @@ export default async function NewRental({ searchParams }: { searchParams: Promis
           <div className="field"><label className="check" style={{ marginTop: 22 }}><input type="checkbox" name="fee_taxable" defaultChecked /> Fee taxable</label></div>
         </div>
         <h2>Original rental agreement</h2>
-        <div className="field"><input type="file" name="agreement" accept=".pdf,.png,.jpg,.jpeg" /></div>
+        <div className="field"><FileInput name="agreement" accept=".pdf,.png,.jpg,.jpeg" maxMb={maxUploadMb()} /></div>
         <div className="field"><label>Internal notes</label><textarea name="internal_notes" rows={2} /></div>
         <button className="btn-primary">Create rental</button>
       </form>

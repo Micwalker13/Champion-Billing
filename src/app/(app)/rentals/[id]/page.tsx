@@ -1,3 +1,5 @@
+import { FileInput } from "@/components/file-input";
+import { maxUploadMb } from "@/lib/limits";
 import { notFound } from "next/navigation";
 import { requireUser } from "@/lib/session";
 import { can } from "@/lib/permissions";
@@ -111,8 +113,8 @@ export default async function RentalPage({ params, searchParams }: { params: Pro
       <div className="grid g2">
         <div className="card">
           <h2>Documents</h2>
-          {docs.length ? docs.map((d: any) => <div key={d.id}><a href={`/api/documents/${d.id}`}>{d.filename}</a> <span className="small muted">{d.is_original_agreement ? "original agreement · " : ""}{new Date(d.uploaded_at).toLocaleDateString("en-US")}</span></div>) : <p className="muted">No documents.{profile.require_contract_attachment && " This customer requires the original agreement on every invoice."}</p>}
-          {can(user, "edit_records") && <form action={uploadDocumentAction} className="row" style={{ marginTop: 10 }}><input type="hidden" name="contract_id" value={contract.id} /><input type="hidden" name="back" value={back} /><div className="field"><input type="file" name="file" accept=".pdf,.png,.jpg,.jpeg" required /></div><button>Upload agreement</button></form>}
+          {docs.length ? docs.map((d: any) => <div key={d.id}><a href={`/api/documents/${d.id}`}>{d.filename}</a> <span className="small muted">{d.is_original_agreement ? "original agreement · " : ""}{new Date(d.uploaded_at).toLocaleDateString("en-US", { timeZone: "America/Chicago" })}</span></div>) : <p className="muted">No documents.{profile.require_contract_attachment && " This customer requires the original agreement on every invoice."}</p>}
+          {can(user, "edit_records") && <form action={uploadDocumentAction} className="row" style={{ marginTop: 10 }}><input type="hidden" name="contract_id" value={contract.id} /><input type="hidden" name="back" value={back} /><div className="field"><FileInput name="file" accept=".pdf,.png,.jpg,.jpeg" maxMb={maxUploadMb()} required /></div><button>Upload agreement</button></form>}
         </div>
         <div className="card">
           <h2>Rental status</h2>

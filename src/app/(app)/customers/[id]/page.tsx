@@ -36,7 +36,7 @@ export default async function CustomerPage({ params, searchParams }: { params: P
         <div className="card">
           <h2>Partial-period proration</h2>
           <p><span className={`badge ${p.proration_policy === "unapproved" ? "b-warn" : "b-ok"}`}>{PRORATION_LABELS[p.proration_policy as keyof typeof PRORATION_LABELS]}</span></p>
-          {p.proration_policy !== "unapproved" && <p className="small muted">Approved by {p.approver} on {new Date(p.proration_approved_at).toLocaleDateString("en-US")}: “{p.proration_approval_note}”</p>}
+          {p.proration_policy !== "unapproved" && <p className="small muted">Approved by {p.approver} on {new Date(p.proration_approved_at).toLocaleDateString("en-US", { timeZone: "America/Chicago" })}: “{p.proration_approval_note}”</p>}
           <p className="small muted">Champion must explicitly approve how partial periods (mid-month deliveries, call-offs, returns) are charged. Until then, partial periods cannot be invoiced.</p>
           {admin && <form action={approveProrationAction}><input type="hidden" name="customer_id" value={id} /><input type="hidden" name="back" value={back} />
             <div className="field"><label>Policy</label><select name="policy" defaultValue={p.proration_policy}>{Object.entries(PRORATION_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></div>

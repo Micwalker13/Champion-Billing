@@ -1,7 +1,12 @@
+import { redirect } from "next/navigation";
 import { loginAction } from "../actions";
+import { needsSetup } from "@/lib/services/setup";
+
+export const dynamic = "force-dynamic";
 
 export default async function LoginPage({ searchParams }: { searchParams: Promise<{ err?: string }> }) {
   const { err } = await searchParams;
+  if (await needsSetup()) redirect("/setup");
   return (
     <div className="login-wrap">
       <div className="card login">
