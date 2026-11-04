@@ -1,0 +1,54 @@
+name: Nightly database backup
+# Off-site copy of the Supabase database, independent of Supabase's own backups.
+# Encrypted with BACKUP_PASSPHRASE and kept as a workflow artifact for 35 days.
+# Does nothing until the BACKUP_DATABASE_URL and BACKUP_PASSPHRASE secrets are set.
+on:
+  schedule:
+    - cron: "15 8 * * *" # 2:15 or 3:15 am Central
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency: backup
+jobs:
+  backup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      scratch:
+        image: postgres:18
+        env: { POSTGRES_PASSWORD: scratch, POSTGRES_DB: restore_check }
+        ports: ["5432:5432"]
+        options: --health-cmd pg_isready --health-interval 5s --health-retries 10
+    env:
+      BACKUP_DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
+      BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+      DATABASE_CA_CERT: ${{ secrets.DATABASE_CA_CERT }}
+      RESTORE_CHECK_URL: postgres://postgres:scratch@localhost:5432/restore_check
+    steps:
+      - name: Check the backup secrets are set
+        id: check
+        run: |
+          if [ -z "$BACKUP_DATABASE_URL" ] || [ -z "$BACKUP_PASSPHRASE" ]; then
+            echo "::notice::Backup secrets are not set yet, so there is nothing to back up. See docs/VERCEL-SUPABASE.md."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.check.outputs.run == 'true'
+      - name: Install PostgreSQL 18 client tools
+        if: steps.check.outputs.run == 'true'
+        run: |
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y -q postgresql-client-18
+          echo "/usr/lib/postgresql/18/bin" >> "$GITHUB_PATH"
+      - name: Dump, test the restore, encrypt
+        if: steps.check.outputs.run == 'true'
+        run: bash scripts/offsite-backup.sh
+      - uses: actions/upload-artifact@v4
+        if: steps.check.outputs.run == 'true'
+        with:
+          name: champion-billing-backup-${{ github.run_number }}
+          path: backup-out/
+          retention-days: 35
+          if-no-files-found: error

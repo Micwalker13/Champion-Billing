@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getUser } from "@/lib/session";
 import { can } from "@/lib/permissions";
 import { audit, pool, q } from "@/lib/db";
+import { todayCentral } from "@/lib/dates";
 
 // CSV cells that start with = + - @ are prefixed so spreadsheets never execute them as formulas.
 const cell = (v: unknown) => {
@@ -47,5 +48,5 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ kind
   if (!def) return NextResponse.json({ error: "Unknown export" }, { status: 404 });
   const rows = await q(def.sql, def.params ? def.params(req.nextUrl.searchParams) : []);
   await audit(pool(), user.id, "export", kind, null, null, { rows: rows.length });
-  return new NextResponse("﻿" + toCsv(rows), { headers: { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": `attachment; filename="champion-${kind}-${new Date().toISOString().slice(0, 10)}.csv"`, "Cache-Control": "private, no-store" } });
+  return new NextResponse("﻿" + toCsv(rows), { headers: { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": `attachment; filename="champion-${kind}-${todayCentral()}.csv"`, "Cache-Control": "private, no-store" } });
 }

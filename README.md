@@ -42,7 +42,17 @@ npm run build && npm start      # http://localhost:3000
 
 Development/demo only: `npm run seed` loads **sample** data (26 RPM units, sample users `admin@ / manager@ / clerk@ / viewer@champion.local`, password `champion-demo-2026`). It refuses to run with `NODE_ENV=production`.
 
-### Docker (recommended for production)
+### Vercel + Supabase (Champion's production setup)
+
+Step-by-step guide: **[docs/VERCEL-SUPABASE.md](docs/VERCEL-SUPABASE.md)**. In short:
+- Vercel runs `npm run vercel-build`, which applies migrations on **production** deploys only (preview builds skip them), then builds.
+- `DATABASE_URL` is Supabase's transaction-pooler string. Set `DATABASE_CA_CERT` to Supabase's root certificate for verified TLS.
+- `db/hardening.sql` runs after every migration. It removes Supabase's `anon`/`authenticated` access to every table and turns on row-level security, so nothing is reachable through Supabase's public REST API.
+- With no terminal, the first admin is created at `/setup`. That page needs `SETUP_TOKEN` and closes once a user exists.
+- Uploads are capped at 4 MB on Vercel because of its 4.5 MB request limit. `MAX_UPLOAD_MB` overrides the cap.
+- `.github/workflows/backup.yml` makes a nightly encrypted off-site dump with a restore test.
+
+### Docker on your own server (alternative)
 
 ```bash
 echo "POSTGRES_PASSWORD=$(openssl rand -hex 24)" > .env

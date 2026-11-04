@@ -10,6 +10,7 @@ import { assignPo, removePoAssignment } from "@/lib/services/pos";
 import { approveInvoice, DuplicateInvoiceError, generateInvoice, generateMonthForCustomer, issueInvoice, overrideCheck, recordPayment, refreshInvoice, rejectInvoice, reviseInvoice, submitForReview, voidInvoice } from "@/lib/services/invoices";
 import { applyImportBatch, approveCleanRows, cancelImportBatch, createImportBatch, decideImportRow, editImportRow } from "@/lib/services/imports";
 import { updateCompanySettings } from "@/lib/services/settings";
+import { firstRunSetup } from "@/lib/services/setup";
 import { ProrationPolicy } from "@/lib/billing";
 import { q } from "@/lib/db";
 import { applyRentalBatch, cancelRentalBatch, uploadRentalFile } from "@/lib/services/rental-import";
@@ -62,6 +63,17 @@ export async function loginAction(fd: FormData) {
     (await cookies()).set(SESSION_COOKIE, token, { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production" && process.env.INSECURE_COOKIES !== "1", path: "/", expires });
   } catch (e) {
     target = "/login?err=" + encodeURIComponent(errorMessage(e));
+  }
+  redirect(target);
+}
+export async function setupAction(fd: FormData) {
+  let target = "/settings?msg=" + encodeURIComponent("Setup complete. Enter Champion's details below, then add your team under Users.");
+  try {
+    await firstRunSetup({ token: str(fd, "token"), name: str(fd, "name"), email: str(fd, "email"), password: str(fd, "password"), confirm: str(fd, "confirm"), createRpm: bool(fd, "create_rpm"), rpmAddress: str(fd, "rpm_address") });
+    const { token, expires } = await login(str(fd, "email"), str(fd, "password"));
+    (await cookies()).set(SESSION_COOKIE, token, { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production" && process.env.INSECURE_COOKIES !== "1", path: "/", expires });
+  } catch (e) {
+    target = "/setup?err=" + encodeURIComponent(errorMessage(e));
   }
   redirect(target);
 }

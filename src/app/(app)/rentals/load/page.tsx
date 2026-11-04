@@ -1,3 +1,5 @@
+import { FileInput } from "@/components/file-input";
+import { maxUploadMb } from "@/lib/limits";
 import { requireUser } from "@/lib/session";
 import { one, q } from "@/lib/db";
 import { rentalBatches } from "@/lib/services/rental-import";
@@ -19,7 +21,7 @@ export default async function RentalLoad({ searchParams }: { searchParams: Promi
         <input type="hidden" name="back" value="/rentals/load" />
         <div className="row">
           <div className="field"><label>Customer</label><select name="customer_id" defaultValue={rpm?.id}>{customers.map((c: any) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></div>
-          <div className="field" style={{ flexBasis: 260 }}><label>CSV or Excel file</label><input type="file" name="file" accept=".csv,.xlsx" required /></div>
+          <div className="field" style={{ flexBasis: 260 }}><label>CSV or Excel file</label><FileInput name="file" accept=".csv,.xlsx" maxMb={maxUploadMb()} required /></div>
           <button className="btn-primary">Upload &amp; preview</button>
         </div>
         <p className="small muted">Columns (header names are matched flexibly): <strong>Contract, Unit, Start Date, Rate</strong> (required); Description, Serial, Make, Model, Bill From <em>or</em> Billed Through, Rate Basis (default monthly), Job, Work Order, Jobsite, Jobsite Address, Quipli Reference, Notes. <a href="/api/sample/rental-load-template.csv">Download template</a></p>
