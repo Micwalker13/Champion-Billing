@@ -117,6 +117,23 @@ describe("Connection settings", () => {
     delete process.env.DATABASE_CA_CERT;
     expect(pgConfig("postgres://x@h/db").ssl).toBeUndefined();
   });
+  it("accepts the POSTGRES_URL created by Supabase's Vercel integration", () => {
+    const saved = process.env.DATABASE_URL;
+    delete process.env.DATABASE_URL;
+    process.env.POSTGRES_URL = "postgres://postgres.ref:pw@aws-0-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require&supa=base-pooler.x";
+    const c = pgConfig();
+    expect(c.connectionString).toContain("aws-0-us-east-1.pooler.supabase.com:6543");
+    expect(c.connectionString).toContain("uselibpqcompat=true"); // encrypted, Supabase CA not required
+    delete process.env.POSTGRES_URL;
+    expect(() => pgConfig()).toThrow(/add DATABASE_URL/);
+    process.env.DATABASE_URL = saved;
+  });
+  it("encrypts Supabase connections even when the URL has no sslmode", () => {
+    const c = pgConfig("postgresql://postgres.ref:pw@aws-0-us-east-1.pooler.supabase.com:6543/postgres");
+    expect(c.connectionString).toMatch(/sslmode=require/);
+    expect(c.connectionString).toMatch(/uselibpqcompat=true/);
+    expect(pgConfig("postgres://x@localhost/db").connectionString).toBe("postgres://x@localhost/db");
+  });
   it("uses a small pool on Vercel", () => {
     process.env.VERCEL = "1";
     expect(pgConfig("postgres://x@h/db").max).toBe(3);

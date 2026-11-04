@@ -1,9 +1,9 @@
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { Client } from "pg";
-import { pgConfig } from "../src/lib/db";
+import { databaseUrl, pgConfig } from "../src/lib/db";
 
-export async function migrate(connectionString = process.env.DATABASE_URL!) {
+export async function migrate(connectionString = databaseUrl()) {
   const { max: _max, idleTimeoutMillis: _idle, ...cfg } = pgConfig(connectionString);
   const client = new Client(cfg);
   await client.connect();
@@ -41,5 +41,5 @@ if (require.main === module) {
     console.log(`Skipping migrations for a ${process.env.VERCEL_ENV} build.`);
     process.exit(0);
   }
-  migrate().catch((e) => { console.error(e); process.exit(1); });
+  migrate().catch((e) => { console.error(`Database migration failed: ${e?.message ?? e}`); process.exit(1); });
 }
