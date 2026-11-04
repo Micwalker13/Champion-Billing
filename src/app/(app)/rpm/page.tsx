@@ -21,6 +21,7 @@ export default async function RpmBoard({ searchParams }: { searchParams: Promise
   const { stats, rows: all, imports } = await customerMonthSummary(customerId, month, { unit: sp.unit || undefined, po: sp.po || undefined, status: sp.status || undefined });
   const rows = sp.flag === "missing" ? all.filter((r: any) => r.flags.includes("Missing PO")) : sp.flag === "issues" ? all.filter((r: any) => r.flags.length) : all;
   const back = `/rpm?customer=${customerId}&month=${ym}${sp.unit ? `&unit=${encodeURIComponent(sp.unit)}` : ""}${sp.po ? `&po=${encodeURIComponent(sp.po)}` : ""}${sp.status ? `&status=${sp.status}` : ""}${sp.flag ? `&flag=${sp.flag}` : ""}`;
+  const finalCount = all.filter((r: any) => r.invoice_id && ["approved", "issued", "partially_paid", "paid", "overdue"].includes(r.invoice_status)).length;
   const pct = (n: number) => (stats.active ? Math.round((n / stats.active) * 100) : 0);
   return (
     <>
@@ -49,6 +50,8 @@ export default async function RpmBoard({ searchParams }: { searchParams: Promise
           {can(user, "generate_invoice") && <form action={generateMonthAction} className="inline"><input type="hidden" name="customer_id" value={customerId} /><input type="hidden" name="month" value={month} /><input type="hidden" name="back" value={back} /><button className="btn-primary">Generate draft invoices for {monthLabel(month)}</button></form>}
           {can(user, "submit_invoice") && <form action={bulkSubmitAction} className="inline"><input type="hidden" name="customer_id" value={customerId} /><input type="hidden" name="month" value={month} /><input type="hidden" name="back" value={back} /><button>Submit all drafts for review</button></form>}
           {can(user, "approve_invoice") && <form action={bulkApproveAction} className="inline"><input type="hidden" name="customer_id" value={customerId} /><input type="hidden" name="month" value={month} /><input type="hidden" name="back" value={back} /><button>Approve all that pass checks</button></form>}
+          {finalCount > 0 && <a className="btn" href={`/api/packet?customer=${customerId}&month=${ym}`} target="_blank">Download all {finalCount} approved invoices (one PDF)</a>}
+          <a className="btn" href={`/api/statements/${customerId}`} target="_blank">Statement PDF</a>
           {imports.length > 0 && <span className="muted small">Imports this month: {imports.map((i: any) => <a key={i.id} href={`/imports/${i.id}`} style={{ marginRight: 6 }}>#{i.id} ({i.status})</a>)}</span>}
         </div>
       </div>

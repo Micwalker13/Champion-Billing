@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic";
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const user = await requireUser();
   const links: Array<[string, string, boolean?]> = [
-    ["/", "Dashboard"], ["/rpm", "RPM billing"], ["/invoices", "Invoices"], ["/imports", "PO imports"],
+    ["/", "Dashboard"], ["/rpm", "RPM billing"], ["/invoices", "Invoices"], ["/imports", "PO imports"], ["/reports", "Reports"],
     ["/rentals", "Rentals"], ["/customers", "Customers"], ["/equipment", "Equipment"], ["/exports", "Exports"], ["/audit", "Audit log"],
     ["/settings", "Settings", can(user, "configure_billing")],
   ];
@@ -17,9 +17,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       <nav className="side" aria-label="Main">
         <div className="brand">Champion <span>Billing</span></div>
         <div className="sect">Billing</div>
-        {visible.slice(0, 4).map(([href, label]) => <a key={href} href={href}>{label}</a>)}
+        {visible.slice(0, 5).map(([href, label]) => <a key={href} href={href}>{label}</a>)}
         <div className="sect">Records</div>
-        {visible.slice(4).map(([href, label]) => <a key={href} href={href}>{label}</a>)}
+        {visible.slice(5).map(([href, label]) => <a key={href} href={href}>{label}</a>)}
         <div className="who">
           <div style={{ color: "#fff" }}>{user.name}</div>
           <div>{ROLE_LABELS[user.role]}</div>

@@ -2,7 +2,28 @@ import { NextRequest, NextResponse } from "next/server";
 import { getUser } from "@/lib/session";
 import { can } from "@/lib/permissions";
 import { audit, pool, q } from "@/lib/db";
-import { todayCentral } from "@/lib/dates";
+import { isIsoDate, todayCentral } from "@/lib/dates";
+import { BUCKET_LABELS, agingReport, rentalActivity } from "@/lib/services/reports";
+
+// Exports computed in code rather than one SQL query.
+const COMPUTED: Record<string, (sp: URLSearchParams) => Promise<any[]>> = {
+  aging: async (sp) => {
+    const asOf = isIsoDate(sp.get("asOf") ?? "") ? sp.get("asOf")! : todayCentral();
+    const r = await agingReport(asOf);
+    return r.invoices.map((i) => ({ as_of: asOf, customer: i.customer_name, customer_code: i.customer_code, invoice_number: i.invoice_number, status: i.status, unit: i.unit,
+      rental_agreement: i.contract, po_number: i.po_number, period_start: i.period_start, period_end: i.period_end, invoice_date: i.invoice_date, due_date: i.due_date,
+      days_past_due: i.days_past_due, aging_bucket: BUCKET_LABELS[i.bucket], total: i.total, amount_paid: i.amount_paid, balance: i.balance }));
+  },
+  "rental-activity": async (sp) => {
+    const m = sp.get("month") ?? "";
+    const month = /^\d{4}-\d{2}$/.test(m) ? `${m}-01` : `${todayCentral().slice(0, 7)}-01`;
+    const c = sp.get("customer");
+    const r = await rentalActivity(month, c && /^\d+$/.test(c) ? c : null);
+    return r.rows.map((x: any) => ({ month: month.slice(0, 7), customer: x.customer_name, rental_agreement: x.contract_number, unit: x.unit_number, description: x.description,
+      status: x.status, on_rent_date: x.on_rent_date, billing_start_date: x.billing_start_date, off_rent_date: x.off_rent_date, days_on_rent_in_month: x.days_on_rent,
+      rate: x.rate_amount, rate_basis: x.rate_basis, billed_through: x.billed_through, billed_this_month: x.billed_this_month, billed_to_date: x.billed_to_date, paid_to_date: x.paid_to_date }));
+  },
+};
 
 // CSV cells that start with = + - @ are prefixed so spreadsheets never execute them as formulas.
 const cell = (v: unknown) => {
@@ -45,8 +66,9 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ kind
   if (!can(user, "export_data")) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   const { kind } = await params;
   const def = QUERIES[kind];
-  if (!def) return NextResponse.json({ error: "Unknown export" }, { status: 404 });
-  const rows = await q(def.sql, def.params ? def.params(req.nextUrl.searchParams) : []);
+  const computed = COMPUTED[kind];
+  if (!def && !computed) return NextResponse.json({ error: "Unknown export" }, { status: 404 });
+  const rows = computed ? await computed(req.nextUrl.searchParams) : await q(def.sql, def.params ? def.params(req.nextUrl.searchParams) : []);
   await audit(pool(), user.id, "export", kind, null, null, { rows: rows.length });
   return new NextResponse("﻿" + toCsv(rows), { headers: { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": `attachment; filename="champion-${kind}-${todayCentral()}.csv"`, "Cache-Control": "private, no-store" } });
 }

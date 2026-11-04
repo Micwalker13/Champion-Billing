@@ -181,3 +181,95 @@ export async function renderInvoicePdf({ invoice, lines, attachments, draft }: R
   }
   return doc.save({ useObjectStreams: false });
 }
+
+// ───────────────────────── Customer statement ─────────────────────────
+interface StatementInput {
+  asOf: string;
+  company: any;
+  customer: any;
+  invoices: Array<{ invoice_number: string; invoice_date: string; due_date: string; po_number: string | null; unit: string; period_start: string; period_end: string; total: string; amount_paid: string; balance: string; days_past_due: number }>;
+  totals: Record<string, string>;
+  payments: Array<{ paid_on: string; amount: string; method: string | null; reference: string | null; invoice_number: string }>;
+}
+
+/** A statement of account: open invoices with their PO, aging totals and recent payments. Rendered on demand, not stored. */
+export async function renderStatementPdf({ asOf, company, customer, invoices, totals, payments }: StatementInput): Promise<Uint8Array> {
+  const doc = await PDFDocument.create();
+  doc.setTitle(`Statement ${customer.customer_code} ${asOf}`);
+  doc.setCreator("Champion Billing");
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  const bold = await doc.embedFont(StandardFonts.HelveticaBold);
+  const W = 612, H = 792, M = 40;
+  let page = doc.addPage([W, H]);
+  const text = (t: unknown, x: number, y: number, size = 9, f = font, color = INK) => page.drawText(clean(t), { x, y, size, font: f, color });
+  const right = (t: unknown, xr: number, y: number, size = 9, f = font, color = INK) => page.drawText(clean(t), { x: xr - f.widthOfTextAtSize(clean(t), size), y, size, font: f, color });
+
+  let y = H - M;
+  text(company?.legal_name ?? "Champion Equipment", M, y - 14, 18, bold, ACCENT);
+  [company?.address_line1, company?.address_line2, company?.city_state_zip, [company?.phone, company?.email].filter(Boolean).join("  |  ")].filter(Boolean)
+    .forEach((l, i) => text(l, M, y - 30 - i * 11, 9, font, MUTED));
+  right("STATEMENT", W - M, y - 14, 18, bold);
+  right(`As of ${fmtDate(asOf)}`, W - M, y - 30, 9, font, MUTED);
+  right(`Customer ID ${customer.customer_code}`, W - M, y - 41, 9, font, MUTED);
+
+  y -= 95;
+  text("BILL TO", M, y, 8, bold, MUTED);
+  text(customer.name, M, y - 13, 11, bold);
+  wrap(customer.billing_address ?? "", font, 9, 260).forEach((l, i) => text(l, M, y - 26 - i * 11, 9));
+  // Amount due box
+  page.drawRectangle({ x: W - M - 200, y: y - 40, width: 200, height: 48, color: PO_BG, borderColor: ACCENT, borderWidth: 1 });
+  text("TOTAL BALANCE DUE", W - M - 190, y - 6, 8, bold, ACCENT);
+  text(fmtUSD(totals.total), W - M - 190, y - 30, 18, bold);
+
+  // Aging strip
+  y -= 80;
+  const buckets: Array<[string, string]> = [["Not yet due", "current"], ["1-30 days", "d1_30"], ["31-60 days", "d31_60"], ["61-90 days", "d61_90"], ["Over 90 days", "d90_plus"]];
+  const bw = (W - 2 * M) / buckets.length;
+  buckets.forEach(([label, k], i) => {
+    page.drawRectangle({ x: M + i * bw, y: y - 30, width: bw - 4, height: 34, borderColor: RULE, borderWidth: 1 });
+    text(label, M + i * bw + 6, y - 8, 7.5, font, MUTED);
+    text(fmtUSD(totals[k]), M + i * bw + 6, y - 23, 10, bold);
+  });
+
+  // Open invoices table
+  y -= 52;
+  const cols: Array<[string, number, "l" | "r"]> = [["Invoice #", M, "l"], ["Date", M + 82, "l"], ["Due", M + 132, "l"], ["PO", M + 182, "l"], ["Unit", M + 228, "l"], ["Period", M + 290, "l"], ["Total", M + 418, "r"], ["Paid", M + 470, "r"], ["Balance", W - M, "r"]];
+  const header = () => {
+    page.drawRectangle({ x: M, y: y - 5, width: W - 2 * M, height: 17, color: rgb(0.95, 0.96, 0.97) });
+    cols.forEach(([h, x, a]) => (a === "r" ? right(h, x, y, 8, bold, MUTED) : text(h, x + 3, y, 8, bold, MUTED)));
+    y -= 18;
+  };
+  text("OPEN INVOICES", M, y + 6, 8, bold, MUTED);
+  y -= 12;
+  header();
+  if (!invoices.length) { text("No open invoices. Thank you.", M + 3, y, 9); y -= 14; }
+  for (const inv of invoices) {
+    if (y < M + 80) { page = doc.addPage([W, H]); y = H - M; header(); }
+    const vals = [inv.invoice_number, fmtDate(inv.invoice_date), fmtDate(inv.due_date), inv.po_number ?? "-", inv.unit, `${fmtDate(inv.period_start)}-${fmtDate(inv.period_end).slice(0, 5)}`, fmtUSD(inv.total), fmtUSD(inv.amount_paid), fmtUSD(inv.balance)];
+    cols.forEach(([, x, a], i) => (a === "r" ? right(vals[i], x, y, 8.5, i === 8 ? bold : font) : text(vals[i], x + 3, y, 8.5, font, inv.days_past_due > 0 && i === 2 ? rgb(0.7, 0.1, 0.1) : INK)));
+    y -= 13;
+  }
+  page.drawLine({ start: { x: M, y: y + 6 }, end: { x: W - M, y: y + 6 }, thickness: 0.5, color: RULE });
+  right("Total balance due", M + 470, y - 8, 10, bold);
+  right(fmtUSD(totals.total), W - M, y - 8, 10, bold);
+  y -= 34;
+
+  if (payments.length) {
+    if (y < M + 80) { page = doc.addPage([W, H]); y = H - M; }
+    text("PAYMENTS RECEIVED (LAST 90 DAYS)", M, y, 8, bold, MUTED);
+    y -= 14;
+    for (const p of payments.slice(0, 20)) {
+      if (y < M + 40) { page = doc.addPage([W, H]); y = H - M; }
+      text(`${fmtDate(p.paid_on)}  ${p.invoice_number}  ${[p.method, p.reference].filter(Boolean).join(" ")}`, M + 3, y, 8.5);
+      right(fmtUSD(p.amount), W - M, y, 8.5);
+      y -= 12;
+    }
+    y -= 10;
+  }
+  if (y < M + 40) { page = doc.addPage([W, H]); y = H - M; }
+  const footer = [`Please reference the invoice number and PO with your payment.${customer.payment_terms_label ? ` Terms: ${customer.payment_terms_label}.` : ""}`];
+  if (company?.remit_to) footer.push(`Remit to: ${company.remit_to}`);
+  footer.flatMap((f) => wrap(f, font, 8.5, W - 2 * M)).forEach((l, i) => text(l, M, y - i * 11, 8.5, font, MUTED));
+  if (company?.is_placeholder) text("PLACEHOLDER company details - confirm in Settings before sending to customers.", M, M - 10, 8, bold, rgb(0.75, 0.1, 0.1));
+  return doc.save();
+}

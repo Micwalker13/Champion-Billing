@@ -19,7 +19,8 @@ writes to it, or changes anything in it.
 | Reconciliation | Customer PO estimate vs calculated subtotal, tax and total, with $ and % variance and a configurable tolerance. The estimate is never treated as a spending limit, and rates are never changed to match it. |
 | Dashboards | All-customer dashboard (active rentals, current-month invoices and POs, missing POs, pending approvals, discrepancies, unbilled, overdue, billed this month, completion %). RPM board per month with per-machine status, filters (customer, unit, PO, month, status), bulk generate, submit and approve. Mobile friendly. |
 | Security | Email/password login (bcrypt, httpOnly session cookie, 12-hour sessions, throttled failures). Roles: Administrator, Billing manager (approver), Billing clerk, Read-only. The submitter can't approve their own invoice. Append-only audit log. No public pages. |
-| Exports | CSV exports of invoices, PO assignments, rentals and the audit log (formula-injection safe). |
+| Reports | **Money owed (AR aging):** open balances by customer in Not yet due / 1-30 / 31-60 / 61-90 / 90+ day buckets as of any date, with partial payments netted. **Customer statement PDF:** open invoices with PO, aging totals and recent payments. **Month packet:** all of a customer's approved invoices for a month as one PDF, built from the stored hash-checked originals. **Rental activity:** every machine on rent in a month, with days on rent, billed-through date (to compare with Quipli), billed this month and to date. Reports are read-only. |
+| Exports | CSV exports of invoices, PO assignments, rentals, the audit log, AR aging and rental activity (formula-injection safe). |
 
 ## Historical invoice integrity (how it's enforced)
 
