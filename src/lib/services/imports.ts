@@ -123,6 +123,7 @@ export async function analyzeBatch(db: Db, batchId: string) {
     if (r.po_number) poCount.set(r.po_number, (poCount.get(r.po_number) ?? 0) + 1);
   }
   const ctxCache = new Map<string, LineContext>();
+  const matchedLines = new Map<string, number>();
 
   for (const r of rows) {
     const issues: Issue[] = (r.issues as Issue[]).filter((i) => i.code === "parse" && !r.edited);
@@ -131,9 +132,23 @@ export async function analyzeBatch(db: Db, batchId: string) {
     if (!unit) issues.push({ code: "missing_unit", severity: "error", message: "Unit number is missing." });
     else {
       if ((unitCount.get(unit) ?? 0) > 1 && r.decision !== "skipped") issues.push({ code: "duplicate_unit", severity: "error", message: `Unit ${unit} appears ${unitCount.get(unit)} times in this file. Skip the extra row(s).` });
-      const line = await one(
+      let line = await one(
         `SELECT l.*, c.customer_id, c.contract_number FROM rental_contract_lines l JOIN rental_contracts c ON c.id=l.contract_id JOIN equipment e ON e.id=l.equipment_id
          WHERE e.unit_number=$1 ORDER BY (c.customer_id=$2) DESC, (l.status IN ('active','off_rent')) DESC, l.on_rent_date DESC LIMIT 1`, [unit, batch.customer_id], db);
+      // The customer may still list a unit that was exchanged out mid-rental. Its PO belongs to the same rental, now on the replacement unit.
+      if (!line || String(line.customer_id) !== String(batch.customer_id) || !["active", "off_rent"].includes(line.status)) {
+        const swapped = await one(
+          `SELECT l.*, c.customer_id, c.contract_number, now_e.unit_number AS now_unit, x.exchange_date FROM equipment_exchanges x JOIN rental_contract_lines l ON l.id=x.contract_line_id
+           JOIN rental_contracts c ON c.id=l.contract_id JOIN equipment o ON o.id=x.out_equipment_id JOIN equipment now_e ON now_e.id=l.equipment_id
+           WHERE o.unit_number=$1 AND c.customer_id=$2 AND l.status IN ('active','off_rent') ORDER BY x.exchange_date DESC LIMIT 1`, [unit, batch.customer_id], db);
+        if (swapped) {
+          line = swapped;
+          issues.push({ code: "exchanged_unit", severity: "info", message: `Unit ${unit} was exchanged for ${swapped.now_unit} on ${fmtDate(swapped.exchange_date)}. This PO goes on the same rental (${swapped.contract_number}), now billed as unit ${swapped.now_unit}.` });
+        }
+      }
+      if (line && matchedLines.has(String(line.id)) && r.decision !== "skipped")
+        issues.push({ code: "duplicate_rental", severity: "error", message: `Rows ${matchedLines.get(String(line.id))} and ${r.row_number} are the same rental (${line.contract_number}); the unit was exchanged. Skip one of them.` });
+      else if (line && r.decision !== "skipped") matchedLines.set(String(line.id), r.row_number);
       const eq = await one(`SELECT id FROM equipment WHERE unit_number=$1`, [unit], db);
       if (!eq) {
         const sugg = similarUnits(unit, allUnits);
@@ -205,8 +220,9 @@ export async function analyzeBatch(db: Db, batchId: string) {
   const active = await q(`SELECT l.id, e.unit_number, c.contract_number, l.billing_start_date, l.off_rent_date FROM rental_contract_lines l JOIN rental_contracts c ON c.id=l.contract_id JOIN equipment e ON e.id=l.equipment_id
                           WHERE c.customer_id=$1 AND l.status IN ('active','off_rent') AND l.billing_start_date <= $3 AND (l.off_rent_date IS NULL OR l.off_rent_date >= $2) ORDER BY e.unit_number`,
     [batch.customer_id, month, monthEnd(month)], db);
-  const missing = active.filter((a) => !inFile.has(a.unit_number));
   const fresh = await q(`SELECT issues, decision, matched_line_id FROM import_rows WHERE batch_id=$1`, [batchId], db);
+  const matchedIds = new Set(fresh.filter((r) => r.decision !== "skipped" && r.matched_line_id).map((r) => String(r.matched_line_id)));
+  const missing = active.filter((a) => !inFile.has(a.unit_number) && !matchedIds.has(String(a.id)));
   const summary = {
     rows: fresh.length,
     matched: fresh.filter((r) => r.matched_line_id).length,

@@ -14,6 +14,9 @@ import { firstRunSetup } from "@/lib/services/setup";
 import { ProrationPolicy } from "@/lib/billing";
 import { q } from "@/lib/db";
 import { applyRentalBatch, cancelRentalBatch, uploadRentalFile } from "@/lib/services/rental-import";
+import { createYard, exchangeUnit, updateUnit } from "@/lib/services/inventory";
+import { createSale, finalizeSale, recordSalePayment, voidSale } from "@/lib/services/sales";
+import { fmtDate } from "@/lib/dates";
 
 const str = (fd: FormData, k: string) => { const v = fd.get(k); return typeof v === "string" ? v : ""; };
 const bool = (fd: FormData, k: string) => fd.get(k) === "on" || fd.get(k) === "true";
@@ -36,6 +39,7 @@ function errorMessage(e: unknown): string {
   if (/duplicate key value.*equipment_unit_number/.test(m)) return "That unit number already exists.";
   if (/duplicate key value.*rental_contracts_contract_number/.test(m)) return "That rental contract number already exists.";
   if (/duplicate key value.*users_email/.test(m)) return "A user with that email already exists.";
+  if (/duplicate key value.*yards_name/.test(m)) return "A yard with that name already exists.";
   return m;
 }
 
@@ -120,7 +124,7 @@ export async function approveProrationAction(fd: FormData) {
 // ───────── Equipment & rentals
 export async function createEquipmentAction(fd: FormData) {
   await run(fd, "/equipment", async (u) => {
-    const e = await createEquipment(u, { unit_number: str(fd, "unit_number"), description: str(fd, "description"), serial_number: str(fd, "serial_number"), make: str(fd, "make"), model: str(fd, "model"), year: str(fd, "year") });
+    const e = await createEquipment(u, { unit_number: str(fd, "unit_number"), description: str(fd, "description"), serial_number: str(fd, "serial_number"), make: str(fd, "make"), model: str(fd, "model"), year: str(fd, "year"), category: str(fd, "category"), yard_id: str(fd, "yard_id"), hour_meter: str(fd, "hour_meter") });
     return `Unit ${e.unit_number} added.`;
   });
 }
@@ -284,4 +288,42 @@ export async function applyRentalBatchAction(fd: FormData) {
 }
 export async function cancelRentalBatchAction(fd: FormData) {
   await run(fd, "/rentals/load", async (u) => { await cancelRentalBatch(u, str(fd, "batch_id")); return { to: "/rentals/load", msg: "Load cancelled. Nothing was created." }; });
+}
+
+// ───────── Inventory, exchanges and sales
+export async function createYardAction(fd: FormData) {
+  await run(fd, "/equipment", async (u) => { const y = await createYard(u, { name: str(fd, "name"), address: str(fd, "address") }); return `Yard ${y.name} added.`; });
+}
+export async function updateUnitAction(fd: FormData) {
+  await run(fd, "/equipment", async (u) => {
+    const keys = ["description", "category", "serial_number", "make", "model", "year", "yard_id", "status", "hour_meter", "asking_price", "notes", "note"];
+    const e = await updateUnit(u, str(fd, "equipment_id"), Object.fromEntries(keys.map((k) => [k, str(fd, k)])));
+    return `Unit ${e.unit_number} saved.`;
+  });
+}
+export async function exchangeUnitAction(fd: FormData) {
+  await run(fd, "/rentals", async (u) => {
+    const keys = ["in_unit", "exchange_date", "reason", "out_status", "out_yard_id", "out_hours", "in_hours", "freight_amount"];
+    const r = await exchangeUnit(u, str(fd, "line_id"), Object.fromEntries(keys.map((k) => [k, str(fd, k)])));
+    const after = r.finalizedAfter.length ? ` ${r.finalizedAfter.join(", ")} already went out showing unit ${r.out.unit_number}; ${r.finalizedAfter.length > 1 ? "they stay" : "it stays"} as sent, and the amount is the same.` : "";
+    return `Exchanged: unit ${r.in.unit_number} is on this rental from ${fmtDate(r.exchange.exchange_date)}, and unit ${r.out.unit_number} went back as ${r.out.status === "in_shop" ? "in the shop" : "available"}. Billing, rate and PO carry on unchanged.${after}`;
+  });
+}
+export async function createSaleAction(fd: FormData) {
+  await run(fd, "/sales", async (u) => {
+    const s = await createSale(u, {
+      customer_id: str(fd, "customer_id"), unit_number: str(fd, "unit_number"), price: str(fd, "price"), freight: str(fd, "freight"), taxable: bool(fd, "taxable"),
+      tax_percent: str(fd, "tax_percent"), terms_days: str(fd, "terms_days"), hours_at_sale: str(fd, "hours_at_sale"), notes: str(fd, "notes"),
+    });
+    return { to: `/sales/${s.id}`, msg: "Draft sale created. Check it, then finalize to number it and mark the unit sold." };
+  });
+}
+export async function finalizeSaleAction(fd: FormData) {
+  await run(fd, "/sales", async (u) => { const r = await finalizeSale(u, str(fd, "sale_id")); return `Finalized as invoice ${r.sale_number}. The unit is now marked sold.`; });
+}
+export async function voidSaleAction(fd: FormData) {
+  await run(fd, "/sales", async (u) => { await voidSale(u, str(fd, "sale_id"), str(fd, "reason")); return "Sale voided. If it was finalized, the unit is available again."; });
+}
+export async function salePaymentAction(fd: FormData) {
+  await run(fd, "/sales", async (u) => { await recordSalePayment(u, str(fd, "sale_id"), { amount: str(fd, "amount"), paid_on: str(fd, "paid_on"), method: str(fd, "method"), reference: str(fd, "reference") }); return "Payment recorded."; });
 }

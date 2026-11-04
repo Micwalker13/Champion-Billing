@@ -90,7 +90,7 @@ export async function renderInvoicePdf({ invoice, lines, attachments, draft }: R
   y -= 90;
   page.drawLine({ start: { x: M, y: y + 8 }, end: { x: W - M, y: y + 8 }, thickness: 0.6, color: RULE });
   const grid: Array<[string, string]> = [
-    ["Equipment unit", s.equipment.unit_number],
+    ["Equipment unit", s.units ? `${s.equipment.unit_number} (exchanged)` : s.equipment.unit_number],
     ["Description", s.equipment.description],
     ["Serial number", s.equipment.serial_number ?? "—"],
     ["Rental start date", fmtDate(s.line.on_rent_date)],
@@ -145,6 +145,7 @@ export async function renderInvoicePdf({ invoice, lines, attachments, draft }: R
   const notes = [
     `Please reference PO ${invoice.po_number ?? "(none)"} and invoice ${invoice.invoice_number ?? "(draft)"} with payment.`,
     `This invoice is one billing period of continuous rental agreement ${s.contract.number}; the agreement remains in effect until the equipment is called off or returned.`,
+    s.units ? `Equipment exchange: ${s.units.map((u: any) => `unit ${u.unit_number}${u.serial_number ? ` (S/N ${u.serial_number})` : ""} on site ${fmtDate(u.from)} - ${fmtDate(u.to)}`).join("; ")}. The rental, rate and PO continue unchanged.` : "",
     s.company.remit_to ? `Remit to: ${s.company.remit_to}` : "",
     attachments.length ? `Attached: original rental agreement (${attachments.map((a) => a.filename).join(", ")}).` : "",
   ].filter(Boolean);
@@ -272,4 +273,77 @@ export async function renderStatementPdf({ asOf, company, customer, invoices, to
   footer.flatMap((f) => wrap(f, font, 8.5, W - 2 * M)).forEach((l, i) => text(l, M, y - i * 11, 8.5, font, MUTED));
   if (company?.is_placeholder) text("PLACEHOLDER company details - confirm in Settings before sending to customers.", M, M - 10, 8, bold, rgb(0.75, 0.1, 0.1));
   return doc.save();
+}
+
+// ───────────────────────── Equipment sale invoice ─────────────────────────
+/** Invoice for selling a unit. The finalized PDF is stored once and never regenerated. */
+export async function renderSalePdf({ sale, draft }: { sale: any; draft: boolean }): Promise<Uint8Array> {
+  const s = sale.snapshot;
+  const doc = await PDFDocument.create();
+  const fixedDate = new Date(sale.finalized_at ?? sale.created_at ?? 0);
+  doc.setTitle(`Invoice ${sale.sale_number ?? "DRAFT"}`);
+  doc.setAuthor(clean(s.company?.legal_name));
+  doc.setCreator("Champion Billing");
+  doc.setProducer("Champion Billing");
+  doc.setCreationDate(fixedDate);
+  doc.setModificationDate(fixedDate);
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  const bold = await doc.embedFont(StandardFonts.HelveticaBold);
+  const W = 612, H = 792, M = 40;
+  const page = doc.addPage([W, H]);
+  const text = (t: unknown, x: number, y: number, size = 9, f = font, color = INK) => page.drawText(clean(t), { x, y, size, font: f, color });
+  const right = (t: unknown, xr: number, y: number, size = 9, f = font, color = INK) => page.drawText(clean(t), { x: xr - f.widthOfTextAtSize(clean(t), size), y, size, font: f, color });
+
+  let y = H - M;
+  text(s.company?.legal_name, M, y - 14, 18, bold, ACCENT);
+  [s.company?.address_line1, s.company?.address_line2, s.company?.city_state_zip, [s.company?.phone, s.company?.email].filter(Boolean).join("  |  ")].filter(Boolean)
+    .forEach((l, i) => text(l, M, y - 30 - i * 11, 9, font, MUTED));
+  right(draft ? "DRAFT INVOICE" : "INVOICE", W - M, y - 14, 18, bold);
+  right("EQUIPMENT SALE", W - M, y - 28, 9, bold, ACCENT);
+  const terms = Number(sale.terms_days) === 0 ? "Due on receipt" : `Net ${sale.terms_days}`;
+  ([["Invoice #", sale.sale_number ?? "Not yet assigned"], ["Invoice date", fmtDate(sale.sale_date)], ["Due date", fmtDate(sale.due_date)], ["Terms", terms]] as Array<[string, string]>)
+    .forEach(([k, v], i) => { right(k, W - M - 110, y - 44 - i * 12, 9, font, MUTED); right(v, W - M, y - 44 - i * 12, 9, bold); });
+
+  y = H - M - 120;
+  text("BILL TO", M, y, 8, bold, MUTED);
+  text(s.customer.name, M, y - 13, 10, bold);
+  const addr = wrap(s.customer.billing_address ?? "", font, 9, 260);
+  addr.forEach((l, i) => text(l, M, y - 25 - i * 11, 9));
+  text(`Customer ID: ${s.customer.code}`, M, y - 25 - addr.length * 11, 8, font, MUTED);
+
+  y -= 90;
+  page.drawLine({ start: { x: M, y: y + 8 }, end: { x: W - M, y: y + 8 }, thickness: 0.6, color: RULE });
+  const e = s.equipment;
+  const grid: Array<[string, string]> = [
+    ["Unit", e.unit_number], ["Serial number", e.serial_number ?? "—"],
+    ["Make / model", [e.make, e.model].filter(Boolean).join(" ") || "—"], ["Year", e.year ? String(e.year) : "—"],
+    ["Description", e.description], ["Hour meter", sale.hours_at_sale != null ? String(sale.hours_at_sale) : "—"],
+  ];
+  grid.forEach(([k, v], i) => { const x = M + (i % 2) * 270; const yy = y - Math.floor(i / 2) * 14; text(k, x, yy, 8, font, MUTED); text(wrap(v, bold, 9, 160)[0], x + 85, yy, 9, bold); });
+
+  y -= 3 * 14 + 16;
+  page.drawRectangle({ x: M, y: y - 4, width: W - 2 * M, height: 16, color: rgb(0.95, 0.96, 0.97) });
+  text("Description", M + 6, y, 8, bold, MUTED);
+  right("Amount", W - M - 6, y, 8, bold, MUTED);
+  y -= 18;
+  const items: Array<[string, string]> = [[`Sale of unit ${e.unit_number}: ${[e.year, e.make, e.model].filter(Boolean).join(" ")} ${e.description}${e.serial_number ? `, S/N ${e.serial_number}` : ""}`, sale.price]];
+  if (Number(sale.freight) > 0) items.push(["Freight / delivery", sale.freight]);
+  for (const [d, amt] of items) {
+    const lines = wrap(d, font, 9, 400);
+    lines.forEach((l, i) => text(l, M + 6, y - i * 11, 9));
+    right(fmtUSD(amt), W - M - 6, y, 9);
+    y -= lines.length * 11 + 6;
+    page.drawLine({ start: { x: M, y: y + 3 }, end: { x: W - M, y: y + 3 }, thickness: 0.4, color: RULE });
+    y -= 4;
+  }
+  y -= 6;
+  const taxPct = (Number(sale.tax_rate) * 100).toFixed(3).replace(/\.?0+$/, "");
+  ([["Subtotal", fmtUSD(sale.subtotal), false], [sale.taxable ? `Sales tax (${taxPct}%)` : "Sales tax (exempt)", fmtUSD(sale.tax_amount), false], ["TOTAL AMOUNT DUE", fmtUSD(sale.total), true]] as Array<[string, string, boolean]>)
+    .forEach(([k, v, b], i) => { right(k, W - M - 110, y - i * 16, b ? 11 : 9, b ? bold : font, b ? INK : MUTED); right(v, W - M - 6, y - i * 16, b ? 12 : 9, b ? bold : font); });
+  y -= 70;
+  const notes = [sale.notes ? `Notes: ${sale.notes}` : "", `Please reference invoice ${sale.sale_number ?? "(draft)"} with payment.`, s.company?.remit_to ? `Remit to: ${s.company.remit_to}` : ""].filter(Boolean);
+  for (const n of notes) { wrap(n, font, 8.5, W - 2 * M).forEach((l) => { text(l, M, y, 8.5, font, MUTED); y -= 11; }); y -= 2; }
+  if (s.company?.is_placeholder) text("PLACEHOLDER company details - confirm in Settings before sending to customers.", M, 28, 8, bold, rgb(0.75, 0.1, 0.1));
+  if (draft) page.drawText("DRAFT - NOT AN INVOICE", { x: 120, y: 300, size: 46, font: bold, color: rgb(0.85, 0.2, 0.2), opacity: 0.18, rotate: degrees(35) });
+  return doc.save({ useObjectStreams: false });
 }

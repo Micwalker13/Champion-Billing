@@ -47,7 +47,7 @@ async function Aging({ asOf, showInvoices, canExport }: { asOf: string; showInvo
       </div>
       <div className="card">
         <h2>By customer</h2>
-        <p className="muted small">Approved and sent invoices that still have a balance, grouped by how far past the due date they are on {fmtDate(asOf)}. Drafts and voided invoices are not included.</p>
+        <p className="muted small">Approved and sent invoices (rentals and equipment sales) that still have a balance, grouped by how far past the due date they are on {fmtDate(asOf)}. Drafts and voided invoices are not included.</p>
         {r.customers.length ? (
           <div className="table-wrap"><table>
             <thead><tr><th>Customer</th><th className="num">Invoices</th>{AGING_BUCKETS.map((b) => <th key={b} className="num">{BUCKET_LABELS[b]}</th>)}<th className="num">Total</th><th>Statement</th></tr></thead>
@@ -72,8 +72,8 @@ async function Aging({ asOf, showInvoices, canExport }: { asOf: string; showInvo
           <div className="table-wrap"><table>
             <thead><tr><th>Invoice</th><th>Status</th><th>Unit</th><th>PO</th><th>Period</th><th>Due</th><th className="num">Days late</th><th className="num">Total</th><th className="num">Paid</th><th className="num">Balance</th></tr></thead>
             <tbody>{r.invoices.filter((i) => i.customer_id === showInvoices).map((i) => (
-              <tr key={i.id}>
-                <td><a href={`/invoices/${i.id}`}>{i.invoice_number}</a></td><td><StatusBadge status={i.status} /></td><td>{i.unit}</td><td className="mono">{i.po_number ?? "—"}</td>
+              <tr key={`${i.kind}${i.id}`}>
+                <td><a href={i.href}>{i.invoice_number}</a>{i.kind === "sale" && <div className="small muted">Equipment sale</div>}</td><td><StatusBadge status={i.status} /></td><td>{i.unit}</td><td className="mono">{i.po_number ?? "—"}</td>
                 <td className="nowrap">{fmtDate(i.period_start)} – {fmtDate(i.period_end)}</td><td>{fmtDate(i.due_date)}</td>
                 <td className="num" style={i.days_past_due > 0 ? { color: "var(--bad)" } : undefined}>{i.days_past_due || "—"}</td>
                 <td className="num">{fmtUSD(i.total)}</td><td className="num">{fmtUSD(i.amount_paid)}</td><td className="num"><b>{fmtUSD(i.balance)}</b></td>

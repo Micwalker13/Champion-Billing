@@ -5,7 +5,7 @@ import { BILLING_METHOD_LABELS, ProrationNotApprovedError, RateBasisMismatchErro
 import { D, cents, dec, money } from "../money";
 import { addDays, fmtDate, todayCentral } from "../dates";
 import { validatePoFormat } from "../po";
-import { LineContext, loadLineContext } from "./records";
+import { LineContext, loadLineContext, unitSegments } from "./records";
 import { activePoForPeriod, ensureBillingPeriod } from "./pos";
 import { renderInvoicePdf } from "../pdf";
 
@@ -45,10 +45,15 @@ export function calculatePeriod(ctx: LineContext, period: { period_start: string
     if (e instanceof ProrationNotApprovedError || e instanceof RateBasisMismatchError) throw new AppError(e.message, e.code);
     throw e;
   }
-  const unit = ctx.equipment.unit_number;
+  // Name the unit(s) actually on site in this period. An exchange keeps the same rental and rate, so the
+  // charge is unchanged; the description just shows which machine was there on which days.
+  const segs = unitSegments(ctx, billed.start, billed.end);
+  const units = segs.length > 1
+    ? segs.map((g, i) => `${i ? "exchanged for " : ""}Unit ${g.equipment.unit_number} ${g.equipment.description} (${fmtDate(g.from)} to ${fmtDate(g.to)})`).join(", ")
+    : `Unit ${(segs[0]?.equipment ?? ctx.equipment).unit_number} ${(segs[0]?.equipment ?? ctx.equipment).description}`;
   const lines: DraftCalc["lines"] = [{
     kind: "rental",
-    description: `Rental — Unit ${unit} ${ctx.equipment.description} — ${fmtDate(billed.start)} to ${fmtDate(billed.end)} (${rc.explanation})`,
+    description: `Rental — ${units} — ${fmtDate(billed.start)} to ${fmtDate(billed.end)} (${rc.explanation})`,
     quantity: rc.quantity, unit: rc.unit, unit_price: rc.unitPrice, amount: rc.amount, taxable: ctx.line.taxable,
   }];
   const firstPeriod = billed.start === ctx.line.billing_start_date;
@@ -80,13 +85,17 @@ export function calculatePeriod(ctx: LineContext, period: { period_start: string
 }
 
 function buildSnapshot(ctx: LineContext, company: any, assignment: any | null, period: any) {
+  const segs = unitSegments(ctx, period.period_start, period.period_end);
+  const eq = segs.at(-1)?.equipment ?? ctx.equipment;
   return {
     company: { legal_name: company.legal_name, address_line1: company.address_line1, address_line2: company.address_line2, city_state_zip: company.city_state_zip,
       phone: company.phone, email: company.email, remit_to: company.remit_to, is_placeholder: company.is_placeholder },
     customer: { id: ctx.customer.id, code: ctx.customer.customer_code, name: ctx.customer.name, billing_address: ctx.customer.billing_address },
     contract: { id: ctx.contract.id, number: ctx.contract.contract_number, start_date: ctx.contract.start_date, quipli_reference: ctx.contract.quipli_reference },
-    line: { id: ctx.line.id, on_rent_date: ctx.line.on_rent_date, rate_amount: ctx.line.rate_amount, rate_basis: ctx.line.rate_basis, equipment_id: ctx.equipment.id },
-    equipment: { id: ctx.equipment.id, unit_number: ctx.equipment.unit_number, description: ctx.equipment.description, serial_number: ctx.equipment.serial_number, make: ctx.equipment.make, model: ctx.equipment.model },
+    line: { id: ctx.line.id, on_rent_date: ctx.line.on_rent_date, rate_amount: ctx.line.rate_amount, rate_basis: ctx.line.rate_basis, equipment_id: eq.id },
+    equipment: { id: eq.id, unit_number: eq.unit_number, description: eq.description, serial_number: eq.serial_number, make: eq.make, model: eq.model },
+    // Only present when the unit was exchanged during this period.
+    ...(segs.length > 1 ? { units: segs.map((g) => ({ id: g.equipment.id, unit_number: g.equipment.unit_number, description: g.equipment.description, serial_number: g.equipment.serial_number, from: g.from, to: g.to })) } : {}),
     jobsite: ctx.jobsite ? { name: ctx.jobsite.name, address: ctx.jobsite.address } : null,
     job_number: assignment?.job_number ?? ctx.contract.job_number ?? null,
     work_order_number: assignment?.work_order_number ?? ctx.contract.work_order_number ?? null,
@@ -236,8 +245,13 @@ export async function validateInvoice(id: string, db: Db = pool()): Promise<Chec
   else add("rental_exists", "Active rental exists", "pass", `Rental ${ctx.contract.contract_number} (${ctx.line.status.replace("_", "-")}), on rent since ${fmtDate(ctx.line.on_rent_date)}.`);
 
   // 2. Correct equipment
-  if (String(snap.equipment.id) !== String(ctx.line.equipment_id)) add("equipment_match", "Correct equipment", "fail", `Invoice shows unit ${snap.equipment.unit_number} but the rental line is for a different unit.`, false);
-  else add("equipment_match", "Correct equipment", "pass", `Unit ${snap.equipment.unit_number}${snap.equipment.serial_number ? `, serial ${snap.equipment.serial_number}` : ""}.`);
+  const onSite = unitSegments(ctx, inv.period_start, inv.period_end);
+  const expectedUnit = onSite.at(-1)?.equipment ?? ctx.equipment;
+  const swapNote = onSite.length > 1 ? ` Exchanged during the period: ${onSite.map((g) => `${g.equipment.unit_number} ${fmtDate(g.from)}–${fmtDate(g.to)}`).join(", ")}.` : "";
+  if (String(snap.equipment.id) !== String(expectedUnit.id)) {
+    if (inv.finalized_at) add("equipment_match", "Correct equipment", "info", `Finalized showing unit ${snap.equipment.unit_number}. Unit ${expectedUnit.unit_number} was exchanged in afterwards; the amount is unchanged and the next invoice shows the new unit.`, false);
+    else add("equipment_match", "Correct equipment", "fail", `Invoice shows unit ${snap.equipment.unit_number} but unit ${expectedUnit.unit_number} is on this rental for these dates. Recalculate the invoice.`, false);
+  } else add("equipment_match", "Correct equipment", "pass", `Unit ${snap.equipment.unit_number}${snap.equipment.serial_number ? `, serial ${snap.equipment.serial_number}` : ""}.${swapNote}`);
 
   // 3. Billing period
   const bp = billedPeriodFor(ctx.window, inv.period_start);
