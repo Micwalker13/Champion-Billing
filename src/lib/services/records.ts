@@ -5,7 +5,8 @@ import { AppError, Db, audit, one, pool, q, tx } from "../db";
 import { SessionUser, requirePerm } from "../permissions";
 import { BillingMethod, LineWindow, ProrationPolicy, RateBasis } from "../billing";
 import { normalizeUnit } from "../po";
-import { isIsoDate } from "../dates";
+import { addDays, isIsoDate } from "../dates";
+import { UNIT_STATUS_LABELS, logEvent } from "./inventory";
 
 const isoDate = z.string().refine(isIsoDate, "Use a valid date (YYYY-MM-DD)");
 const optIsoDate = z.union([isoDate, z.literal("")]).optional().nullable().transform((v) => (v ? v : null));
@@ -109,15 +110,19 @@ export const equipmentSchema = z.object({
   serial_number: optText,
   make: optText,
   model: optText,
-  year: z.union([z.coerce.number().int().min(1950).max(2100), z.literal("")]).optional().nullable().transform((v) => (v === "" || v == null ? null : v)),
+  year: z.union([z.literal(""), z.coerce.number().int().min(1950).max(2100)]).optional().nullable().transform((v) => (v === "" || v == null ? null : v)),
+  category: optText,
+  yard_id: z.union([z.coerce.string().regex(/^\d+$/), z.literal("")]).optional().nullable().transform((v) => (v ? v : null)),
+  hour_meter: z.union([z.literal(""), z.coerce.number().min(0).max(999999)]).optional().nullable().transform((v) => (v === "" || v == null ? null : v)),
 });
 
 export async function createEquipment(user: SessionUser, input: unknown, db?: Db) {
   requirePerm(user, "edit_records");
   const e = equipmentSchema.parse(input);
   const run = async (c: Db) => {
-    const row = await one(`INSERT INTO equipment(unit_number,description,serial_number,make,model,year) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-      [e.unit_number, e.description, e.serial_number, e.make, e.model, e.year], c);
+    const row = await one(`INSERT INTO equipment(unit_number,description,serial_number,make,model,year,category,yard_id,hour_meter) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+      [e.unit_number, e.description, e.serial_number, e.make, e.model, e.year, e.category, e.yard_id, e.hour_meter], c);
+    await logEvent(c, { equipmentId: row.id, kind: "added", yardId: row.yard_id, status: row.status, hours: row.hour_meter, userId: user.id });
     await audit(c, user.id, "create", "equipment", row.id, null, row);
     return row;
   };
@@ -141,7 +146,7 @@ export const rentalSchema = z.object({
   delivery_charge: moneyStr.default("0"),
   pickup_charge: moneyStr.default("0"),
   taxable: z.boolean().default(true),
-  payment_terms_days: z.union([z.coerce.number().int().min(0).max(365), z.literal("")]).optional().nullable().transform((v) => (v === "" || v == null ? null : v)),
+  payment_terms_days: z.union([z.literal(""), z.coerce.number().int().min(0).max(365)]).optional().nullable().transform((v) => (v === "" || v == null ? null : v)),
   quipli_reference: optText,
   internal_notes: optText,
   fees: z.array(z.object({ description: z.string().trim().min(1), amount: moneyStr, frequency: z.enum(["per_period", "one_time"]), taxable: z.boolean() })).default([]),
@@ -160,6 +165,7 @@ export async function createRentalInTx(db: Db, user: SessionUser, r: z.infer<typ
     const open = await one(`SELECT l.id, c.contract_number FROM rental_contract_lines l JOIN rental_contracts c ON c.id=l.contract_id
                             WHERE l.equipment_id=$1 AND l.status IN ('active','off_rent')`, [equipment.id], db);
     if (open) throw new AppError(`Unit ${r.unit_number} is already on open rental ${open.contract_number}.`);
+    if (equipment.status !== "available") throw new AppError(`Unit ${r.unit_number} is ${UNIT_STATUS_LABELS[equipment.status].toLowerCase()}, so it can't go on rent. Mark it available on its equipment page first.`);
     let jobsiteId: string | null = null;
     if (r.jobsite_address) {
       const js = await one(`INSERT INTO jobsites(customer_id,name,address) VALUES ($1,$2,$3) RETURNING id`,
@@ -218,6 +224,7 @@ export async function changeLineStatus(user: SessionUser, lineId: string, input:
     await db.query(`UPDATE rental_contracts c SET status=$2 WHERE id=$1 AND NOT EXISTS
                      (SELECT 1 FROM rental_contract_lines l WHERE l.contract_id=c.id AND l.id<>$3 AND l.status IN ('active','off_rent'))`,
       [before.contract_id, input.status, lineId]);
+    if (input.status === "returned") await logEvent(db, { equipmentId: before.equipment_id, kind: "returned", date: ret ?? undefined, note: input.note, lineId, userId: user.id });
     await audit(db, user.id, "status_change", "rental_line", lineId, before, after, input.note ?? undefined);
     return after;
   });
@@ -260,6 +267,28 @@ export async function addContractDocument(user: SessionUser, contractId: string,
 export interface LineContext {
   line: any; contract: any; customer: any; profile: any; equipment: any; jobsite: any | null; fees: any[];
   method: BillingMethod; rateBasis: RateBasis; window: LineWindow;
+  /** Unit swaps on this rental, oldest first, each with the full out/in equipment rows. */
+  exchanges: Array<{ id: string; exchange_date: string; reason: string; out: any; in: any }>;
+}
+
+export interface UnitSegment { equipment: any; from: string; to: string }
+
+/**
+ * Which unit was on this rental for each part of [start, end]. Without exchanges that is just the
+ * rental's unit. An exchange dated D means the old unit is billed through D-1 and the new one from D.
+ */
+export function unitSegments(ctx: Pick<LineContext, "equipment" | "exchanges">, start: string, end: string): UnitSegment[] {
+  const ex = ctx.exchanges ?? [];
+  const timeline: Array<{ equipment: any; from: string | null; to: string | null }> = [];
+  let current = ex.length ? ex[0].out : ctx.equipment, from: string | null = null;
+  for (const e of ex) {
+    timeline.push({ equipment: current, from, to: addDays(e.exchange_date, -1) });
+    current = e.in; from = e.exchange_date;
+  }
+  timeline.push({ equipment: current, from, to: null });
+  return timeline
+    .map((t) => ({ equipment: t.equipment, from: t.from && t.from > start ? t.from : start, to: t.to && t.to < end ? t.to : end }))
+    .filter((t) => t.from <= t.to);
 }
 
 export async function loadLineContext(lineId: string, db: Db = pool()): Promise<LineContext> {
@@ -272,8 +301,12 @@ export async function loadLineContext(lineId: string, db: Db = pool()): Promise<
   const jobsite = contract.jobsite_id ? await one(`SELECT * FROM jobsites WHERE id=$1`, [contract.jobsite_id], db) : null;
   const fees = await q(`SELECT * FROM contract_line_fees WHERE contract_line_id=$1 ORDER BY id`, [lineId], db);
   const method: BillingMethod = contract.billing_method || profile.billing_method;
+  const exRows = await q(`SELECT id, exchange_date, reason, out_equipment_id, in_equipment_id FROM equipment_exchanges WHERE contract_line_id=$1 ORDER BY exchange_date, id`, [lineId], db);
+  const units = exRows.length ? await q(`SELECT * FROM equipment WHERE id = ANY($1)`, [[...new Set(exRows.flatMap((e) => [e.out_equipment_id, e.in_equipment_id]))]], db) : [];
+  const byId = new Map(units.map((u) => [String(u.id), u]));
+  const exchanges = exRows.map((e) => ({ id: e.id, exchange_date: e.exchange_date, reason: e.reason, out: byId.get(String(e.out_equipment_id)), in: byId.get(String(e.in_equipment_id)) }));
   return {
-    line, contract, customer, profile, equipment, jobsite, fees, method, rateBasis: line.rate_basis,
+    line, contract, customer, profile, equipment, jobsite, fees, method, rateBasis: line.rate_basis, exchanges,
     window: { method, onRentDate: line.on_rent_date, billingStartDate: line.billing_start_date, offRentDate: line.off_rent_date, billOffRentDay: profile.bill_off_rent_day },
   };
 }

@@ -10,7 +10,8 @@ import { fmtUSD } from "@/lib/money";
 import { addMonths, fmtDate, monthLabel, monthStart, todayCentral } from "@/lib/dates";
 import { BILLING_METHOD_LABELS, RATE_BASIS_LABELS, lastBillableDay } from "@/lib/billing";
 import { Flash, RentalBadge, StatusBadge, Empty } from "@/components/ui";
-import { assignPoAction, changeLineStatusAction, generateInvoiceAction, removePoAction, updateTermsAction, uploadDocumentAction } from "../../../actions";
+import { assignPoAction, changeLineStatusAction, exchangeUnitAction, generateInvoiceAction, removePoAction, updateTermsAction, uploadDocumentAction } from "../../../actions";
+import { availableUnits, exchangesForLine, listYards } from "@/lib/services/inventory";
 
 export default async function RentalPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<Record<string, string>> }) {
   const user = await requireUser();
@@ -20,10 +21,11 @@ export default async function RentalPage({ params, searchParams }: { params: Pro
   const ctx = await loadLineContext(id).catch(() => null);
   if (!ctx) notFound();
   const { line, contract, customer, profile, equipment, jobsite, fees } = ctx;
-  const [history, invoices, docs] = await Promise.all([
+  const [history, invoices, docs, exchanges, spares, yards] = await Promise.all([
     poHistoryForLine(id),
     q(`SELECT id, invoice_number, status, po_number, period_start, period_end, total, revision_no FROM invoices WHERE contract_line_id=$1 ORDER BY period_start DESC, id DESC`, [id]),
     q(`SELECT id, filename, mime_type, uploaded_at, is_original_agreement FROM contract_documents WHERE contract_id=$1 ORDER BY id`, [contract.id]),
+    exchangesForLine(id), availableUnits(), listYards(),
   ]);
   const back = `/rentals/${id}`;
   const thisMonth = monthStart(todayCentral());
@@ -47,7 +49,7 @@ export default async function RentalPage({ params, searchParams }: { params: Pro
             <dt>Customer</dt><dd><a href={`/customers/${customer.id}`}>{customer.name}</a> ({customer.customer_code})</dd>
             <dt>Agreement #</dt><dd>{contract.contract_number}</dd>
             <dt>Quipli reference</dt><dd>{contract.quipli_reference ?? "—"} <span className="small muted">(reference only; this app never changes Quipli)</span></dd>
-            <dt>Equipment</dt><dd>{equipment.unit_number} · {equipment.description} · S/N {equipment.serial_number ?? "—"}</dd>
+            <dt>Equipment</dt><dd><a href={`/equipment/${equipment.id}`}>{equipment.unit_number}</a> · {equipment.description} · S/N {equipment.serial_number ?? "—"}{exchanges.length > 0 && <div className="small muted">Exchanged {exchanges.length}×; first unit was {exchanges.at(-1).out_unit}</div>}</dd>
             <dt>Job / work order</dt><dd>{contract.job_number ?? "—"} / {contract.work_order_number ?? "—"}</dd>
             <dt>Jobsite</dt><dd style={{ whiteSpace: "pre-line" }}>{jobsite ? `${jobsite.name}\n${jobsite.address}` : "—"}</dd>
             <dt>Rate</dt><dd>{fmtUSD(line.rate_amount)} {RATE_BASIS_LABELS[ctx.rateBasis]}{line.taxable ? "" : " (non-taxable)"}</dd>
@@ -132,6 +134,33 @@ export default async function RentalPage({ params, searchParams }: { params: Pro
               </H></form></details>
           </>}
         </div>
+      </div>
+
+      <div className="card">
+        <h2>Exchange this machine</h2>
+        <p className="small muted">Use this when a unit breaks down or the customer needs a different one of the same kind. The rental keeps going: same agreement, same rate, same monthly PO, so the bill does not change and no partial month is created. The old unit goes back to a yard or the shop. If the replacement needs a different rate, call this rental off and start a new one instead.</p>
+        {exchanges.length > 0 && <div className="table-wrap" style={{ marginBottom: 12 }}><table>
+          <thead><tr><th>Date</th><th>Out</th><th>In</th><th>Reason</th><th>Old unit went to</th><th className="num">Freight</th><th>By</th></tr></thead>
+          <tbody>{exchanges.map((x: any) => <tr key={x.id}><td className="nowrap">{fmtDate(x.exchange_date)}</td><td className="mono">{x.out_unit}{x.out_hours != null && <div className="small muted">{x.out_hours} h</div>}</td><td className="mono">{x.in_unit}{x.in_hours != null && <div className="small muted">{x.in_hours} h</div>}</td>
+            <td className="small">{x.reason}</td><td>{x.out_status === "in_shop" ? "Shop" : "Available"}{x.out_yard ? `, ${x.out_yard}` : ""}</td><td className="num">{x.freight ? fmtUSD(x.freight) : "—"}</td><td className="small">{x.user_name}</td></tr>)}</tbody>
+        </table></div>}
+        {can(user, "edit_records") && line.status === "active" ? (
+          <form action={exchangeUnitAction}><H>
+            <div className="row">
+              <div className="field"><label>Replacement unit #</label><input name="in_unit" list="spare-units" required placeholder={spares.length ? `${spares.length} available` : "No units available"} /></div>
+              <div className="field"><label>Exchange date</label><input type="date" name="exchange_date" required defaultValue={todayCentral()} /></div>
+              <div className="field" style={{ flexBasis: 240 }}><label>Reason</label><input name="reason" required placeholder="e.g. hydraulic leak, swapped for same size" /></div>
+            </div>
+            <div className="row" style={{ marginTop: 6 }}>
+              <div className="field"><label>{equipment.unit_number} goes to</label><select name="out_status" defaultValue="in_shop"><option value="in_shop">Shop (needs repair)</option><option value="available">Yard (ready to rent)</option></select></div>
+              <div className="field"><label>Yard</label><select name="out_yard_id" defaultValue={equipment.yard_id ?? ""}><option value="">—</option>{yards.map((y: any) => <option key={y.id} value={y.id}>{y.name}</option>)}</select></div>
+              <div className="field"><label>{equipment.unit_number} hours</label><input name="out_hours" inputMode="decimal" /></div>
+              <div className="field"><label>Replacement hours</label><input name="in_hours" inputMode="decimal" /></div>
+              <div className="field"><label>Exchange freight to bill</label><input name="freight_amount" inputMode="decimal" placeholder="0.00 (none)" /></div>
+            </div>
+            <datalist id="spare-units">{spares.map((u: any) => <option key={u.unit_number} value={u.unit_number}>{u.description}{u.yard_name ? ` (${u.yard_name})` : ""}</option>)}</datalist>
+            <button className="btn-primary" style={{ marginTop: 8 }}>Exchange unit</button>
+          </H></form>) : <p className="muted small">{line.status === "active" ? "You have read-only access." : "Only an active rental can have its unit exchanged."}</p>}
       </div>
     </>
   );

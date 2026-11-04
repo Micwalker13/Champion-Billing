@@ -1,4 +1,5 @@
 import { STATUS_LABELS } from "@/lib/services/invoices";
+import { UNIT_STATUS_LABELS } from "@/lib/services/inventory";
 
 export function Flash({ sp }: { sp: { msg?: string; err?: string } }) {
   return <>
@@ -27,4 +28,9 @@ export function Kpi({ label, value, sub, tone, href }: { label: string; value: R
 
 export function Empty({ children }: { children: React.ReactNode }) {
   return <div className="muted" style={{ padding: 16, textAlign: "center" }}>{children}</div>;
+}
+
+const UNIT_CLASS: Record<string, string> = { on_rent: "b-accent", available: "b-ok", in_shop: "b-warn", sold: "", retired: "" };
+export function UnitStatus({ status }: { status: string }) {
+  return <span className={`badge ${UNIT_CLASS[status] ?? ""}`}>{UNIT_STATUS_LABELS[status] ?? status}</span>;
 }
