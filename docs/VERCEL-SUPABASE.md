@@ -39,6 +39,8 @@ Have your password manager generate a random 24+ character password. This is you
    | `DATABASE_CA_CERT` | the certificate text from step 1 |
    | `SETUP_TOKEN` | the code from step 2 |
 
+   If you connected Supabase to Vercel through Vercel's **Integrations** / **Storage** page, it already added `POSTGRES_URL`. The app uses that automatically when `DATABASE_URL` isn't set. `DATABASE_CA_CERT` is recommended but optional: without it the connection is still encrypted, it just doesn't check Supabase's certificate.
+
 4. Click **Deploy**. The first build takes about 2 minutes. It creates the database tables and then builds the app.
 5. After the import, go to **Project → Settings → Environment Variables** and make sure all three apply to **Production** only, not Preview or Development. That stops test builds of unmerged changes from ever touching the live database.
 
@@ -88,6 +90,6 @@ Then open **Actions → Nightly database backup → Run workflow** to test it. A
 
 ## If something goes wrong
 - **The site shows an error page.** In Vercel, open **Project → Logs**. The usual causes are a mistyped `DATABASE_URL` or a password that wasn't filled in.
-- **The build failed.** Open **Deployments**, click the failed one, and read the end of the build log. "password authentication failed" means `DATABASE_URL` is wrong. "self-signed certificate" means `DATABASE_CA_CERT` is missing or incomplete.
+- **The build failed.** Open **Deployments**, click the failed one, and read the end of the build log. "No database connection string" means Vercel has no `DATABASE_URL` for **Production**: add it under **Settings → Environment Variables**, then **Redeploy**. "password authentication failed" means `DATABASE_URL` is wrong. "self-signed certificate" means `DATABASE_CA_CERT` is missing or incomplete.
 - **Supabase project paused.** This only happens on the Free plan. Upgrade to Pro and restore it from the dashboard.
 - **Go back to the previous version.** In Vercel, choose **Deployments → … → Promote to Production** on the last good deployment.
