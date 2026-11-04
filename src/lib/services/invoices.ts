@@ -18,7 +18,7 @@ export class DuplicateInvoiceError extends AppError {
 export const LIVE_STATUSES = ["draft", "pending_review", "approved", "issued", "partially_paid", "paid", "overdue"];
 export const STATUS_LABELS: Record<string, string> = {
   draft: "Draft", pending_review: "Pending review", rejected: "Rejected", approved: "Approved", issued: "Issued",
-  partially_paid: "Partially paid", paid: "Paid", overdue: "Overdue", voided: "Voided", corrected: "Corrected (superseded)",
+  partially_paid: "Partially paid", paid: "Paid", overdue: "Overdue", voided: "Voided", corrected: "Corrected (superseded)", credited: "Credited in full",
 };
 
 export async function companySettings(db: Db = pool()) {
@@ -463,6 +463,7 @@ export async function voidInvoice(user: SessionUser, id: string, reason: string)
     const inv = await lockInvoice(db, id);
     if (["voided", "corrected", "paid", "partially_paid"].includes(inv.status)) throw new AppError(`A ${STATUS_LABELS[inv.status]} invoice cannot be voided${dec(inv.amount_paid).gt(0) ? " because payments were recorded against it; issue a credit instead" : ""}.`);
     if (dec(inv.amount_paid).gt(0)) throw new AppError("Payments were recorded against this invoice; issue a credit instead of voiding.");
+    if (dec(inv.amount_credited).gt(0)) throw new AppError("Credits were issued against this invoice, so it can't be voided. Issue another credit instead.");
     if (!inv.finalized_at) {
       await db.query(`UPDATE invoices SET status='voided', voided_by=$2, voided_at=now(), void_reason=$3 WHERE id=$1`, [id, user.id, reason]);
     } else {
@@ -481,7 +482,7 @@ export async function reviseInvoice(user: SessionUser, id: string, reason: strin
   return tx(async (db) => {
     const inv = await lockInvoice(db, id);
     if (!inv.finalized_at || !["approved", "issued", "overdue"].includes(inv.status)) throw new AppError("Only approved, issued or overdue invoices can be revised.");
-    if (dec(inv.amount_paid).gt(0)) throw new AppError("Payments were recorded against this invoice; use credit-and-rebill.");
+    if (dec(inv.amount_paid).gt(0) || dec(inv.amount_credited).gt(0)) throw new AppError("Payments or credits were recorded against this invoice; issue a credit and bill the difference instead.");
     await db.query(`UPDATE invoices SET status='corrected' WHERE id=$1`, [id]);
     await db.query(`UPDATE contract_line_fees SET billed_on_invoice_id=NULL WHERE billed_on_invoice_id=$1`, [id]);
     await history(db, id, inv.status, "corrected", user.id, reason);
@@ -498,11 +499,11 @@ export async function recordPayment(user: SessionUser, id: string, input: { amou
   return tx(async (db) => {
     const inv = await lockInvoice(db, id);
     if (!["issued", "overdue", "partially_paid"].includes(inv.status)) throw new AppError("Payments can only be recorded on issued invoices.");
-    const balance = dec(inv.total).sub(inv.amount_paid);
+    const balance = dec(inv.total).sub(inv.amount_paid).sub(dec(inv.amount_credited));
     if (amt.gt(balance)) throw new AppError(`Payment exceeds the balance due (${money(balance)}).`);
     await db.query(`INSERT INTO payments(invoice_id,amount,paid_on,method,reference,recorded_by) VALUES ($1,$2,$3,$4,$5,$6)`, [id, money(amt), input.paid_on, input.method ?? null, input.reference ?? null, user.id]);
     const paid = dec(inv.amount_paid).add(amt);
-    const status = paid.gte(inv.total) ? "paid" : "partially_paid";
+    const status = paid.add(dec(inv.amount_credited)).gte(inv.total) ? "paid" : "partially_paid";
     await db.query(`UPDATE invoices SET amount_paid=$2, status=$3 WHERE id=$1`, [id, money(paid), status]);
     await history(db, id, inv.status, status, user.id, `Payment ${money(amt)}`);
     await audit(db, user.id, "payment", "invoice", id, { amount_paid: inv.amount_paid }, { amount_paid: money(paid) });

@@ -4,7 +4,8 @@ import { can } from "@/lib/permissions";
 import { one } from "@/lib/db";
 import { BILLING_METHOD_LABELS, PRORATION_LABELS } from "@/lib/billing";
 import { Flash } from "@/components/ui";
-import { approveProrationAction, updateCustomerAction, updateProfileAction } from "../../../actions";
+import { approveProrationAction, setInvoiceEmailsAction, updateCustomerAction, updateProfileAction } from "../../../actions";
+import { emailEnabled } from "@/lib/services/email";
 
 export default async function CustomerPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<Record<string, string>> }) {
   const user = await requireUser();
@@ -44,6 +45,12 @@ export default async function CustomerPage({ params, searchParams }: { params: P
             <button>Record policy</button></form>}
         </div>
       </div>
+      <form className="card" action={setInvoiceEmailsAction}>
+        <h2>Where invoices are emailed</h2><input type="hidden" name="customer_id" value={id} /><input type="hidden" name="back" value={back} />
+        <p className="small muted">Each approved invoice goes out as its own email with the PO, unit and period in the subject line. Separate several addresses with commas.{!emailEnabled() && " Email isn't switched on yet, so nothing will be sent until it is."}</p>
+        <div className="row"><div className="field" style={{ flexBasis: 420 }}><label>Invoice email address(es)</label><input name="invoice_emails" defaultValue={p.invoice_emails ?? c.email ?? ""} placeholder="ap@customer.com" disabled={!can(user, "edit_records")} /></div>
+          {can(user, "edit_records") && <button>Save</button>}</div>
+      </form>
       <form className="card" action={updateProfileAction}>
         <h2>Billing rules</h2><input type="hidden" name="customer_id" value={id} /><input type="hidden" name="back" value={back} />
         <div className="grid g3">

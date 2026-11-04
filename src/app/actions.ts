@@ -16,6 +16,8 @@ import { q } from "@/lib/db";
 import { applyRentalBatch, cancelRentalBatch, uploadRentalFile } from "@/lib/services/rental-import";
 import { createYard, exchangeUnit, updateUnit } from "@/lib/services/inventory";
 import { createSale, finalizeSale, recordSalePayment, voidSale } from "@/lib/services/sales";
+import { issueCredit } from "@/lib/services/credits";
+import { emailCredit, emailInvoice, emailMonth, setInvoiceEmails } from "@/lib/services/email";
 import { fmtDate } from "@/lib/dates";
 
 const str = (fd: FormData, k: string) => { const v = fd.get(k); return typeof v === "string" ? v : ""; };
@@ -326,4 +328,31 @@ export async function voidSaleAction(fd: FormData) {
 }
 export async function salePaymentAction(fd: FormData) {
   await run(fd, "/sales", async (u) => { await recordSalePayment(u, str(fd, "sale_id"), { amount: str(fd, "amount"), paid_on: str(fd, "paid_on"), method: str(fd, "method"), reference: str(fd, "reference") }); return "Payment recorded."; });
+}
+
+// ───────── Credit memos
+export async function creditAction(fd: FormData) {
+  await invAction(async (u, id, fd) => {
+    const c = await issueCredit(u, id, { amount: str(fd, "amount"), creditTax: bool(fd, "credit_tax"), reason: str(fd, "reason") });
+    return c;
+  }, "Credit memo issued. Its PDF is in the history below.")(fd);
+}
+
+// ───────── Email
+export async function emailInvoiceAction(fd: FormData) {
+  await invAction(async (u, id) => { const r = await emailInvoice(u, id); return { ok: r }; }, "Emailed to the customer.")(fd);
+}
+export async function emailCreditAction(fd: FormData) {
+  await run(fd, `/invoices/${str(fd, "id")}`, async (u) => { const r = await emailCredit(u, str(fd, "credit_id")); return `Credit memo emailed to ${r.to.join(", ")}.`; });
+}
+export async function emailMonthAction(fd: FormData) {
+  await run(fd, "/rpm", async (u) => {
+    const r = await emailMonth(u, str(fd, "customer_id"), str(fd, "month"));
+    const failed = r.filter((x) => !x.ok);
+    if (!r.length) return "Every approved invoice for this month was already emailed.";
+    return `Emailed ${r.length - failed.length} of ${r.length} invoices.${failed.length ? ` Not sent: ${failed.map((f) => `${f.invoice} (${f.error})`).join("; ")}` : ""}`;
+  });
+}
+export async function setInvoiceEmailsAction(fd: FormData) {
+  await run(fd, "/customers", async (u) => { const a = await setInvoiceEmails(u, str(fd, "customer_id"), str(fd, "invoice_emails")); return a.length ? `Invoices will be emailed to ${a.join(", ")}.` : "Invoice email cleared."; });
 }

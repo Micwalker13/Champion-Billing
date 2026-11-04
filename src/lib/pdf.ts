@@ -188,7 +188,7 @@ interface StatementInput {
   asOf: string;
   company: any;
   customer: any;
-  invoices: Array<{ invoice_number: string; invoice_date: string; due_date: string; po_number: string | null; unit: string; period_start: string; period_end: string; total: string; amount_paid: string; balance: string; days_past_due: number }>;
+  invoices: Array<{ invoice_number: string; invoice_date: string; due_date: string; po_number: string | null; unit: string; period_start: string; period_end: string; total: string; amount_paid: string; amount_credited?: string | null; balance: string; days_past_due: number }>;
   totals: Record<string, string>;
   payments: Array<{ paid_on: string; amount: string; method: string | null; reference: string | null; invoice_number: string }>;
 }
@@ -234,7 +234,7 @@ export async function renderStatementPdf({ asOf, company, customer, invoices, to
 
   // Open invoices table
   y -= 52;
-  const cols: Array<[string, number, "l" | "r"]> = [["Invoice #", M, "l"], ["Date", M + 82, "l"], ["Due", M + 132, "l"], ["PO", M + 182, "l"], ["Unit", M + 228, "l"], ["Period", M + 290, "l"], ["Total", M + 418, "r"], ["Paid", M + 470, "r"], ["Balance", W - M, "r"]];
+  const cols: Array<[string, number, "l" | "r"]> = [["Invoice #", M, "l"], ["Date", M + 82, "l"], ["Due", M + 132, "l"], ["PO", M + 182, "l"], ["Unit", M + 228, "l"], ["Period", M + 290, "l"], ["Total", M + 418, "r"], ["Paid/credit", M + 470, "r"], ["Balance", W - M, "r"]];
   const header = () => {
     page.drawRectangle({ x: M, y: y - 5, width: W - 2 * M, height: 17, color: rgb(0.95, 0.96, 0.97) });
     cols.forEach(([h, x, a]) => (a === "r" ? right(h, x, y, 8, bold, MUTED) : text(h, x + 3, y, 8, bold, MUTED)));
@@ -246,7 +246,7 @@ export async function renderStatementPdf({ asOf, company, customer, invoices, to
   if (!invoices.length) { text("No open invoices. Thank you.", M + 3, y, 9); y -= 14; }
   for (const inv of invoices) {
     if (y < M + 80) { page = doc.addPage([W, H]); y = H - M; header(); }
-    const vals = [inv.invoice_number, fmtDate(inv.invoice_date), fmtDate(inv.due_date), inv.po_number ?? "-", inv.unit, `${fmtDate(inv.period_start)}-${fmtDate(inv.period_end).slice(0, 5)}`, fmtUSD(inv.total), fmtUSD(inv.amount_paid), fmtUSD(inv.balance)];
+    const vals = [inv.invoice_number, fmtDate(inv.invoice_date), fmtDate(inv.due_date), inv.po_number ?? "-", inv.unit, `${fmtDate(inv.period_start)}-${fmtDate(inv.period_end).slice(0, 5)}`, fmtUSD(inv.total), fmtUSD(Number(inv.amount_paid) + Number(inv.amount_credited ?? 0)), fmtUSD(inv.balance)];
     cols.forEach(([, x, a], i) => (a === "r" ? right(vals[i], x, y, 8.5, i === 8 ? bold : font) : text(vals[i], x + 3, y, 8.5, font, inv.days_past_due > 0 && i === 2 ? rgb(0.7, 0.1, 0.1) : INK)));
     y -= 13;
   }
@@ -257,7 +257,7 @@ export async function renderStatementPdf({ asOf, company, customer, invoices, to
 
   if (payments.length) {
     if (y < M + 80) { page = doc.addPage([W, H]); y = H - M; }
-    text("PAYMENTS RECEIVED (LAST 90 DAYS)", M, y, 8, bold, MUTED);
+    text("PAYMENTS AND CREDITS (LAST 90 DAYS)", M, y, 8, bold, MUTED);
     y -= 14;
     for (const p of payments.slice(0, 20)) {
       if (y < M + 40) { page = doc.addPage([W, H]); y = H - M; }
@@ -345,5 +345,67 @@ export async function renderSalePdf({ sale, draft }: { sale: any; draft: boolean
   for (const n of notes) { wrap(n, font, 8.5, W - 2 * M).forEach((l) => { text(l, M, y, 8.5, font, MUTED); y -= 11; }); y -= 2; }
   if (s.company?.is_placeholder) text("PLACEHOLDER company details - confirm in Settings before sending to customers.", M, 28, 8, bold, rgb(0.75, 0.1, 0.1));
   if (draft) page.drawText("DRAFT - NOT AN INVOICE", { x: 120, y: 300, size: 46, font: bold, color: rgb(0.85, 0.2, 0.2), opacity: 0.18, rotate: degrees(35) });
+  return doc.save({ useObjectStreams: false });
+}
+
+// ───────────────────────── Credit memo ─────────────────────────
+/** A credit against a sent invoice. Stored once at issue and never regenerated. */
+export async function renderCreditMemoPdf(memo: { credit_number: string; credit_date: string; reason: string; subtotal: string; tax_rate: string; tax_amount: string; total: string; snapshot: any; created_at: Date }): Promise<Uint8Array> {
+  const s = memo.snapshot;
+  const doc = await PDFDocument.create();
+  doc.setTitle(`Credit memo ${memo.credit_number}`);
+  doc.setAuthor(clean(s.company?.legal_name));
+  doc.setCreator("Champion Billing");
+  doc.setProducer("Champion Billing");
+  doc.setCreationDate(memo.created_at);
+  doc.setModificationDate(memo.created_at);
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  const bold = await doc.embedFont(StandardFonts.HelveticaBold);
+  const W = 612, H = 792, M = 40;
+  const page = doc.addPage([W, H]);
+  const text = (t: unknown, x: number, y: number, size = 9, f = font, color = INK) => page.drawText(clean(t), { x, y, size, font: f, color });
+  const right = (t: unknown, xr: number, y: number, size = 9, f = font, color = INK) => page.drawText(clean(t), { x: xr - f.widthOfTextAtSize(clean(t), size), y, size, font: f, color });
+
+  let y = H - M;
+  text(s.company?.legal_name, M, y - 14, 18, bold, ACCENT);
+  [s.company?.address_line1, s.company?.address_line2, s.company?.city_state_zip, [s.company?.phone, s.company?.email].filter(Boolean).join("  |  ")].filter(Boolean)
+    .forEach((l, i) => text(l, M, y - 30 - i * 11, 9, font, MUTED));
+  right("CREDIT MEMO", W - M, y - 14, 18, bold);
+  ([["Credit memo #", memo.credit_number], ["Date", fmtDate(memo.credit_date)], ["Applies to invoice", s.invoice.number], ["Invoice date", fmtDate(s.invoice.date)]] as Array<[string, string]>)
+    .forEach(([k, v], i) => { right(k, W - M - 120, y - 32 - i * 12, 9, font, MUTED); right(v, W - M, y - 32 - i * 12, 9, bold); });
+
+  y = H - M - 100;
+  page.drawRectangle({ x: M, y: y - 34, width: W - 2 * M, height: 38, color: PO_BG, borderColor: ACCENT, borderWidth: 1.2 });
+  text("CUSTOMER PO NUMBER", M + 10, y - 12, 8, bold, ACCENT);
+  text(s.po_number ?? "NONE", M + 10, y - 28, 16, bold);
+  text("BILLING PERIOD", M + 200, y - 12, 8, bold, ACCENT);
+  text(`${fmtDate(s.invoice.period_start)} - ${fmtDate(s.invoice.period_end)}`, M + 200, y - 28, 13, bold);
+  text("RENTAL AGREEMENT", M + 380, y - 12, 8, bold, ACCENT);
+  text(s.contract?.number ?? "-", M + 380, y - 28, 13, bold);
+
+  y -= 56;
+  text("CUSTOMER", M, y, 8, bold, MUTED);
+  text(s.customer.name, M, y - 13, 10, bold);
+  const addr = wrap(s.customer.billing_address ?? "", font, 9, 260);
+  addr.forEach((l, i) => text(l, M, y - 25 - i * 11, 9));
+  text("EQUIPMENT", M + 290, y, 8, bold, MUTED);
+  text(`${s.equipment.unit_number} ${s.equipment.description}`, M + 290, y - 13, 10, bold);
+
+  y -= 80;
+  page.drawRectangle({ x: M, y: y - 4, width: W - 2 * M, height: 16, color: rgb(0.95, 0.96, 0.97) });
+  text("Reason for credit", M + 6, y, 8, bold, MUTED);
+  right("Amount", W - M - 6, y, 8, bold, MUTED);
+  y -= 18;
+  const lines = wrap(memo.reason, font, 9, 400);
+  lines.forEach((l, i) => text(l, M + 6, y - i * 11, 9));
+  right(`-${fmtUSD(memo.subtotal)}`, W - M - 6, y, 9);
+  y -= lines.length * 11 + 16;
+  const taxPct = (Number(memo.tax_rate) * 100).toFixed(3).replace(/\.?0+$/, "");
+  ([["Credit before tax", `-${fmtUSD(memo.subtotal)}`, false], [`Sales tax credited${Number(memo.tax_amount) > 0 ? ` (${taxPct}%)` : ""}`, `-${fmtUSD(memo.tax_amount)}`, false], ["TOTAL CREDIT", `-${fmtUSD(memo.total)}`, true]] as Array<[string, string, boolean]>)
+    .forEach(([k, v, b], i) => { right(k, W - M - 110, y - i * 16, b ? 11 : 9, b ? bold : font, b ? INK : MUTED); right(v, W - M - 6, y - i * 16, b ? 12 : 9, b ? bold : font); });
+  y -= 70;
+  wrap(`This credit reduces the balance of invoice ${s.invoice.number} (original total ${fmtUSD(s.invoice.total)}). The original invoice is unchanged. Please reference ${memo.credit_number} and PO ${s.po_number ?? "(none)"} when applying it.`, font, 8.5, W - 2 * M)
+    .forEach((l, i) => text(l, M, y - i * 11, 8.5, font, MUTED));
+  if (s.company?.is_placeholder) text("PLACEHOLDER company details - confirm in Settings before sending to customers.", M, 28, 8, bold, rgb(0.75, 0.1, 0.1));
   return doc.save({ useObjectStreams: false });
 }

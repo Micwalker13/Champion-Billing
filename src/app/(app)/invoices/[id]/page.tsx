@@ -2,10 +2,12 @@ import { notFound } from "next/navigation";
 import { requireUser } from "@/lib/session";
 import { can } from "@/lib/permissions";
 import { invoiceDetail, STATUS_LABELS } from "@/lib/services/invoices";
+import { creditsForInvoice, invoiceBalance } from "@/lib/services/credits";
+import { emailEnabled, emailsFor } from "@/lib/services/email";
 import { fmtUSD } from "@/lib/money";
 import { fmtDate, todayCentral } from "@/lib/dates";
 import { Flash, StatusBadge } from "@/components/ui";
-import { approveInvoiceAction, issueInvoiceAction, overrideAction, paymentAction, refreshInvoiceAction, rejectInvoiceAction, reviseInvoiceAction, submitInvoiceAction, voidInvoiceAction } from "../../../actions";
+import { creditAction, emailCreditAction, emailInvoiceAction, approveInvoiceAction, issueInvoiceAction, overrideAction, paymentAction, refreshInvoiceAction, rejectInvoiceAction, reviseInvoiceAction, submitInvoiceAction, voidInvoiceAction } from "../../../actions";
 
 const ICON: Record<string, string> = { pass: "✓", fail: "✗", warn: "!", info: "i" };
 
@@ -17,6 +19,8 @@ export default async function InvoicePage({ params, searchParams }: { params: Pr
   const d = await invoiceDetail(id);
   if (!d) notFound();
   const { inv, lines, checks, reconciliation: rec } = d;
+  const [credits, emails] = await Promise.all([creditsForInvoice(id), emailsFor("invoice", id)]);
+  const mailOn = emailEnabled();
   const s = inv.snapshot;
   const back = `/invoices/${id}`;
   const blocking = checks.filter((c) => (c.status === "fail" || c.status === "warn") && !c.override);
@@ -124,7 +128,10 @@ export default async function InvoicePage({ params, searchParams }: { params: Pr
           {["draft", "rejected"].includes(inv.status) && can(user, "generate_invoice") && <form action={refreshInvoiceAction} className="inline"><H><button>Recalculate from current PO and rental data</button></H></form>}
           {inv.status === "draft" && can(user, "submit_invoice") && <form action={submitInvoiceAction} className="inline"><H><button className="btn-primary">Submit for review</button></H></form>}
           {inv.status === "pending_review" && can(user, "approve_invoice") && <form action={approveInvoiceAction} className="row"><H><div className="field"><input name="invoice_number" placeholder="Invoice # (blank = next in sequence)" aria-label="Invoice number" /></div><button className="btn-primary" disabled={blocking.length > 0} title={blocking.length ? "Resolve or override blocking checks first" : ""}>Approve &amp; finalize</button></H></form>}
-          {inv.status === "approved" && can(user, "issue_invoice") && <form action={issueInvoiceAction} className="inline"><H><button className="btn-primary">Mark issued to customer</button></H></form>}
+          {finalized && !["voided", "corrected"].includes(inv.status) && can(user, "issue_invoice") && (mailOn
+            ? <form action={emailInvoiceAction} className="inline"><H><button className={inv.status === "approved" ? "btn-primary" : ""}>{emails.some((e: any) => e.status === "sent") ? "Email again" : "Email to customer"}</button></H></form>
+            : <span className="small muted">Email isn&rsquo;t switched on yet.</span>)}
+          {inv.status === "approved" && can(user, "issue_invoice") && <form action={issueInvoiceAction} className="inline"><H><button>Mark issued (sent another way)</button></H></form>}
         </div>
         {inv.status === "pending_review" && can(user, "approve_invoice") && (
           <form action={rejectInvoiceAction} className="row" style={{ marginTop: 10 }}><H><div className="field"><input name="reason" placeholder="Reason for rejecting" required /></div><button className="btn-danger">Reject</button></H></form>)}
@@ -135,7 +142,16 @@ export default async function InvoicePage({ params, searchParams }: { params: Pr
             <div className="field"><label>Method</label><input name="method" placeholder="Check / ACH" /></div>
             <div className="field"><label>Reference</label><input name="reference" /></div>
             <button>Record payment</button></H></form>)}
-        {finalized && ["approved", "issued", "overdue"].includes(inv.status) && can(user, "void_invoice") && (
+        {finalized && ["approved", "issued", "overdue", "partially_paid"].includes(inv.status) && can(user, "void_invoice") && (
+          <details style={{ marginTop: 12 }}><summary>Issue a credit memo</summary>
+            <p className="small muted">For an overcharge, a disputed day, or a machine that was down. The invoice stays exactly as sent; the credit is its own numbered PDF ({inv.invoice_number}-CM{credits.length + 1}) and lowers this invoice&rsquo;s balance. Open balance: {fmtUSD(invoiceBalance(inv).toFixed(2))}.</p>
+            <form action={creditAction} className="row"><H>
+              <div className="field"><label>Credit before tax</label><input name="amount" inputMode="decimal" required placeholder="0.00" /></div>
+              <label className="check"><input type="checkbox" name="credit_tax" defaultChecked /> Also credit the sales tax</label>
+              <div className="field" style={{ flexBasis: 280 }}><label>Reason (prints on the credit)</label><input name="reason" required minLength={5} placeholder="e.g. Unit down 3 days for repair, 11/12–11/14" /></div>
+              <button>Issue credit</button></H></form>
+          </details>)}
+        {finalized && ["approved", "issued", "overdue"].includes(inv.status) && Number(inv.amount_credited) === 0 && can(user, "void_invoice") && (
           <details style={{ marginTop: 12 }}><summary>Correct this invoice (revision or void)</summary>
             <p className="small muted">Finalized invoices are never edited. A revision creates a new draft (numbered {inv.invoice_number}-R{inv.revision_no + 1}) from current data and marks this one as corrected. Voiding frees the billing period to be invoiced again.</p>
             <form action={reviseInvoiceAction} className="row"><H><div className="field"><input name="reason" placeholder="Reason for correction (e.g. RPM reissued PO)" required minLength={5} /></div><button>Create revision</button></H></form>
@@ -150,6 +166,8 @@ export default async function InvoicePage({ params, searchParams }: { params: Pr
         <h2>History</h2>
         <div className="table-wrap"><table><thead><tr><th>When</th><th>Change</th><th>By</th><th>Note</th></tr></thead><tbody>
           {d.history.map((h: any) => <tr key={h.id}><td className="nowrap">{new Date(h.at).toLocaleString("en-US", { timeZone: "America/Chicago" })}</td><td>{h.from_status ? `${STATUS_LABELS[h.from_status]} → ` : ""}{STATUS_LABELS[h.to_status]}</td><td>{h.user_name ?? "System"}</td><td>{h.note}</td></tr>)}
+          {credits.map((c: any) => <tr key={`c${c.id}`}><td>{fmtDate(c.credit_date)}</td><td>Credit <a href={`/api/credits/${c.id}/pdf`} target="_blank" rel="noopener">{c.credit_number}</a> {fmtUSD(c.total)}</td><td>{c.created_by_name}</td><td>{c.reason}{mailOn && can(user, "issue_invoice") && <form action={emailCreditAction} className="inline" style={{ marginLeft: 8 }}><H><input type="hidden" name="credit_id" value={c.id} /><button className="btn-sm">Email credit</button></H></form>}</td></tr>)}
+          {emails.map((e: any) => <tr key={`e${e.id}`}><td className="nowrap">{new Date(e.sent_at).toLocaleString("en-US", { timeZone: "America/Chicago" })}</td><td>{e.status === "sent" ? "Emailed" : <span style={{ color: "var(--bad)" }}>Email failed</span>} to {e.to_addresses}</td><td>{e.sent_by_name}</td><td className="small">{e.error ?? e.subject}</td></tr>)}
           {d.payments.map((p: any) => <tr key={`p${p.id}`}><td>{fmtDate(p.paid_on)}</td><td>Payment {fmtUSD(p.amount)}</td><td /><td>{[p.method, p.reference].filter(Boolean).join(" · ")}</td></tr>)}
         </tbody></table></div>
         {inv.pdf_sha256 && <p className="small muted mono">Stored PDF SHA-256: {inv.pdf_sha256}</p>}
