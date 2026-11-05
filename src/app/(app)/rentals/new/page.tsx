@@ -9,7 +9,7 @@ import { createRentalAction } from "../../../actions";
 export default async function NewRental({ searchParams }: { searchParams: Promise<Record<string, string>> }) {
   await requireUser("edit_records");
   const sp = await searchParams;
-  const customers = await q(`SELECT id, name FROM customers WHERE active ORDER BY name`);
+  const customers = await q(`SELECT id, name, credit_hold FROM customers WHERE active ORDER BY name`);
   const units = await q(`SELECT e.unit_number, e.description FROM equipment e WHERE NOT EXISTS (SELECT 1 FROM rental_contract_lines l WHERE l.equipment_id=e.id AND l.status IN ('active','off_rent')) ORDER BY e.unit_number`);
   return (
     <>
@@ -21,7 +21,7 @@ export default async function NewRental({ searchParams }: { searchParams: Promis
         <h2>Agreement</h2>
         <div className="grid g3">
           <div className="field"><label>Rental contract #</label><input name="contract_number" required placeholder="CE-10025" /></div>
-          <div className="field"><label>Customer</label><select name="customer_id" required>{customers.map((c: any) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></div>
+          <div className="field"><label>Customer</label><select name="customer_id" required>{customers.map((c: any) => <option key={c.id} value={c.id}>{c.name}{c.credit_hold ? " (credit hold)" : ""}</option>)}</select></div>
           <div className="field"><label>Equipment unit</label><input name="unit_number" list="units" required placeholder="MUR002101" /><datalist id="units">{units.map((u: any) => <option key={u.unit_number} value={u.unit_number}>{u.description}</option>)}</datalist></div>
           <div className="field"><label>Original rental start date</label><input type="date" name="start_date" required /></div>
           <div className="field"><label>Bill in this system from</label><input type="date" name="billing_start_date" /><div className="small muted">Blank = start date</div></div>
@@ -53,6 +53,8 @@ export default async function NewRental({ searchParams }: { searchParams: Promis
         <h2>Original rental agreement</h2>
         <div className="field"><FileInput name="agreement" accept=".pdf,.png,.jpg,.jpeg" maxMb={maxUploadMb()} /></div>
         <div className="field"><label>Internal notes</label><textarea name="internal_notes" rows={2} /></div>
+        <div className="field"><label>Credit override reason</label><input name="credit_override_reason" maxLength={300} />
+          <div className="small muted">Only needed when the customer is on credit hold or over its credit limit and the rental starts today or later. Billing managers and administrators only; it is recorded in the audit log.</div></div>
         <button className="btn-primary">Create rental</button>
       </form>
     </>

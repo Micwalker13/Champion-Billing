@@ -7,6 +7,9 @@ import { Flash } from "@/components/ui";
 import { addExemptionAction, removeExemptionAction, rdwChoiceAction, uploadCoiAction, removeCoiAction, usageSettingsAction, approveProrationAction, setInvoiceEmailsAction, updateCustomerAction, updateProfileAction } from "../../../actions";
 import { emailEnabled } from "@/lib/services/email";
 import { listCois } from "@/lib/services/insurance";
+import { creditStatus } from "@/lib/services/credit";
+import { fmtUSD } from "@/lib/money";
+import { setCreditTermsAction } from "../../../actions";
 import { listExemptions, loadFeeConfig } from "@/lib/services/fees";
 import { fmtDate, todayCentral } from "@/lib/dates";
 
@@ -19,7 +22,8 @@ export default async function CustomerPage({ params, searchParams }: { params: P
   if (!c) notFound();
   const p = await one(`SELECT p.*, u.name AS approver FROM customer_billing_profiles p LEFT JOIN users u ON u.id=p.proration_approved_by WHERE customer_id=$1`, [id]);
   const back = `/customers/${id}`;
-  const [cois, exemptions, feeCfg] = await Promise.all([listCois(id), listExemptions(id), loadFeeConfig()]);
+  const [cois, exemptions, feeCfg, credit] = await Promise.all([listCois(id), listExemptions(id), loadFeeConfig(), creditStatus(id)]);
+  const creditAdmin = can(user, "manage_credit");
   const today = todayCentral();
   const current = cois.find((x: any) => !x.removed_at && x.effective_on <= today && x.expires_on >= today);
   const editor = can(user, "edit_records");
@@ -92,6 +96,23 @@ export default async function CustomerPage({ params, searchParams }: { params: P
             <button>Upload certificate</button>
           </form></details>}
       </div>
+      <form className="card" id="credit" action={setCreditTermsAction}>
+        <h2>Credit limit</h2><input type="hidden" name="customer_id" value={id} /><input type="hidden" name="back" value={`${back}#credit`} />
+        <p className="small muted">Owed counts open invoices and open equipment sales. When the customer is on credit hold or owes more than the limit, a new rental starting today or later is stopped until a billing manager or administrator overrides it with a reason. Rentals already running, invoices and Quipli are never changed by this.</p>
+        {credit.blocked && <div className="alert alert-bad">{credit.blocked} New rentals need a manager override.</div>}
+        <div className="grid g4">
+          <div><div className="muted small">Owed now</div><div style={{ fontWeight: 700, fontSize: 18 }}>{fmtUSD(credit.owed)}</div></div>
+          <div><div className="muted small">Past due</div><div style={{ fontWeight: 700, fontSize: 18 }}>{fmtUSD(credit.pastDue)}</div></div>
+          <div><div className="muted small">Credit limit</div><div style={{ fontWeight: 700, fontSize: 18 }}>{credit.limit == null ? "No limit" : fmtUSD(credit.limit)}</div></div>
+          <div><div className="muted small">Still available</div><div style={{ fontWeight: 700, fontSize: 18 }}>{credit.available == null ? "—" : fmtUSD(credit.available)}</div></div>
+        </div>
+        <div className="grid g3" style={{ marginTop: 10 }}>
+          <div className="field"><label>Credit limit ($, blank for none)</label><input name="credit_limit" defaultValue={credit.limit ?? ""} inputMode="decimal" disabled={!creditAdmin} /></div>
+          <div className="field"><label className="check" style={{ marginTop: 22 }}><input type="checkbox" name="credit_hold" defaultChecked={credit.hold} disabled={!creditAdmin} /> On credit hold</label></div>
+          <div className="field"><label>Note (required for a hold)</label><input name="credit_note" defaultValue={credit.note ?? ""} maxLength={500} disabled={!creditAdmin} /></div>
+        </div>
+        {creditAdmin ? <button>Save</button> : <p className="small muted">Only a billing manager or administrator can change these.</p>}
+      </form>
       <div className="card" id="exemptions">
         <h2>Fee and tax exemptions</h2>
         <p className="small muted">Use this when the customer doesn't owe a specific fee or tax, for example with an exemption certificate. The exemption applies to billing periods that start within its dates.</p>
