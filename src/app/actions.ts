@@ -27,6 +27,8 @@ import { tx } from "@/lib/db";
 import { acceptQuote, addQuoteLine, assignReservationUnit, cancelReservation, cancelTicket, completeTicket, convertReservation, createQuote, createReservation, declineQuote, markQuoteSent, removeQuoteLine, scheduleTicket } from "@/lib/services/dispatch";
 import { addWorkOrderLine, cancelWorkOrder, completeWorkOrder, createServiceInterval, createWorkOrder, linkWorkOrderRental, removeWorkOrderLine, setIntervalActive, updateWorkOrder } from "@/lib/services/shop";
 import { fmtDate } from "@/lib/dates";
+import { acceptPortalCoi, closePortalRequest, invitePortalUser, setPortalUserActive } from "@/lib/services/portal";
+import { siteOrigin } from "@/lib/portal-session";
 import { disconnectQbo, kickQboSync, retryQboJob, runQboSyncNow, setQboMapping, updateQboSettings } from "@/lib/services/quickbooks";
 
 const str = (fd: FormData, k: string) => { const v = fd.get(k); return typeof v === "string" ? v : ""; };
@@ -624,4 +626,32 @@ export async function qboSyncNowAction(fd: FormData) {
 }
 export async function qboRetryAction(fd: FormData) {
   await run(fd, "/quickbooks", async (u) => { await retryQboJob(u, str(fd, "job_id")); after(kickQboSync); return "Queued to try again."; });
+}
+
+// ───────── Customer portal
+export async function invitePortalUserAction(fd: FormData) {
+  await run(fd, "/customers", async (u) => {
+    const p = await invitePortalUser(u, str(fd, "customer_id"), { email: str(fd, "email"), name: str(fd, "name") }, await siteOrigin());
+    return `Sign-in link emailed to ${p.email}. It works once and expires in 30 minutes; they can ask for a new one from the portal sign-in page any time.`;
+  });
+}
+export async function setPortalUserActiveAction(fd: FormData) {
+  await run(fd, "/customers", async (u) => {
+    const active = str(fd, "active") === "true";
+    await setPortalUserActive(u, str(fd, "portal_user_id"), active);
+    return active ? "Portal access turned back on." : "Portal access turned off and signed out.";
+  });
+}
+export async function closePortalRequestAction(fd: FormData) {
+  await run(fd, "/portal-requests", async (u) => {
+    const status = str(fd, "status") === "declined" ? "declined" : "done";
+    await closePortalRequest(u, str(fd, "request_id"), { status, response: str(fd, "response") });
+    return status === "done" ? "Marked done. The customer sees your note in the portal." : "Declined. The customer sees your reason in the portal.";
+  });
+}
+export async function acceptPortalCoiAction(fd: FormData) {
+  await run(fd, "/portal-requests", async (u) => {
+    const c = await acceptPortalCoi(u, str(fd, "request_id"), { insurer: str(fd, "insurer"), policy_number: str(fd, "policy_number"), effective_on: str(fd, "effective_on"), expires_on: str(fd, "expires_on") });
+    return `Certificate filed on the customer, valid through ${fmtDate(c.expires_on)}. Draft invoices pick it up when they are recalculated.`;
+  });
 }

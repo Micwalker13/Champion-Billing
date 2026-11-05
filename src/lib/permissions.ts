@@ -26,6 +26,7 @@ const MATRIX = {
   manage_fees: ["admin"],
   override_fees: ["admin", "billing_manager"],
   manage_users: ["admin"],
+  manage_portal: ["admin", "billing_manager"],
   manage_quickbooks: ["admin"],
   run_quickbooks_sync: ["admin", "billing_manager"],
   export_data: ["admin", "billing_manager", "billing_clerk"],

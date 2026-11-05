@@ -7,6 +7,8 @@ import { Flash } from "@/components/ui";
 import { addExemptionAction, removeExemptionAction, rdwChoiceAction, uploadCoiAction, removeCoiAction, usageSettingsAction, approveProrationAction, setInvoiceEmailsAction, updateCustomerAction, updateProfileAction } from "../../../actions";
 import { emailEnabled } from "@/lib/services/email";
 import { listCois } from "@/lib/services/insurance";
+import { listPortalUsers } from "@/lib/services/portal";
+import { invitePortalUserAction, setPortalUserActiveAction } from "../../../actions";
 import { listExemptions, loadFeeConfig } from "@/lib/services/fees";
 import { fmtDate, todayCentral } from "@/lib/dates";
 
@@ -19,7 +21,9 @@ export default async function CustomerPage({ params, searchParams }: { params: P
   if (!c) notFound();
   const p = await one(`SELECT p.*, u.name AS approver FROM customer_billing_profiles p LEFT JOIN users u ON u.id=p.proration_approved_by WHERE customer_id=$1`, [id]);
   const back = `/customers/${id}`;
-  const [cois, exemptions, feeCfg] = await Promise.all([listCois(id), listExemptions(id), loadFeeConfig()]);
+  const [cois, exemptions, feeCfg, portalUsers] = await Promise.all([listCois(id), listExemptions(id), loadFeeConfig(), listPortalUsers(id)]);
+  const portalAdmin = can(user, "manage_portal");
+  const when = (t: any) => t ? fmtDate((t instanceof Date ? t.toISOString() : String(t)).slice(0, 10)) : "never";
   const today = todayCentral();
   const current = cois.find((x: any) => !x.removed_at && x.effective_on <= today && x.expires_on >= today);
   const editor = can(user, "edit_records");
@@ -91,6 +95,28 @@ export default async function CustomerPage({ params, searchParams }: { params: P
             <div className="field"><label>Certificate (PDF, PNG or JPG)</label><input type="file" name="certificate" accept="application/pdf,image/png,image/jpeg" required /></div>
             <button>Upload certificate</button>
           </form></details>}
+      </div>
+      <div className="card" id="portal">
+        <h2>Customer portal</h2>
+        <p className="small muted">People here can sign in at <span className="mono">/portal</span> with an emailed link (no password) to see this customer&apos;s rentals and finished invoices, download invoice PDFs, and send pickup, extension, insurance and question requests. They never see other customers, drafts or invoices still in review. Requests land on <a href="/portal-requests">Customer requests</a> for your team to handle.</p>
+        {portalUsers.length > 0 && <table className="small"><thead><tr><th>Name</th><th>Email</th><th>Last sign-in</th><th>Access</th><th></th></tr></thead><tbody>
+          {portalUsers.map((pu: any) => <tr key={pu.id} className={pu.active ? "" : "muted"}>
+            <td>{pu.name}</td><td>{pu.email}</td><td>{when(pu.last_login_at)}</td><td>{pu.active ? "On" : "Off"}</td>
+            <td>{portalAdmin && <form action={setPortalUserActiveAction} className="inline"><input type="hidden" name="portal_user_id" value={pu.id} /><input type="hidden" name="active" value={pu.active ? "false" : "true"} /><input type="hidden" name="back" value={`${back}#portal`} />
+              <button className="btn-sm" type="submit">{pu.active ? "Turn off" : "Turn on"}</button></form>}</td>
+          </tr>)}
+        </tbody></table>}
+        {portalAdmin ? (emailEnabled()
+          ? <details><summary>Give someone access</summary><form action={invitePortalUserAction}>
+              <input type="hidden" name="customer_id" value={id} /><input type="hidden" name="back" value={`${back}#portal`} />
+              <div className="grid g2">
+                <div className="field"><label>Name</label><input name="name" required minLength={2} /></div>
+                <div className="field"><label>Work email</label><input name="email" type="email" required /></div>
+              </div>
+              <button type="submit">Email them a sign-in link</button>
+            </form></details>
+          : <p className="small muted">Email isn&apos;t set up yet, so portal sign-in links can&apos;t be sent. An administrator adds the mail server settings first.</p>)
+          : <p className="small muted">Only an administrator or billing manager can give portal access.</p>}
       </div>
       <div className="card" id="exemptions">
         <h2>Fee and tax exemptions</h2>
