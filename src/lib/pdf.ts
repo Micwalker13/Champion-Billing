@@ -328,6 +328,7 @@ export async function renderSalePdf({ sale, draft }: { sale: any; draft: boolean
   y -= 18;
   const items: Array<[string, string]> = [[`Sale of unit ${e.unit_number}: ${[e.year, e.make, e.model].filter(Boolean).join(" ")} ${e.description}${e.serial_number ? `, S/N ${e.serial_number}` : ""}`, sale.price]];
   if (Number(sale.freight) > 0) items.push(["Freight / delivery", sale.freight]);
+  for (const f of (sale.fees ?? []) as Array<{ description: string; amount: string }>) items.push([f.description, f.amount]);
   for (const [d, amt] of items) {
     const lines = wrap(d, font, 9, 400);
     lines.forEach((l, i) => text(l, M + 6, y - i * 11, 9));
@@ -498,7 +499,14 @@ export async function renderQuotePdf(qt: { quote_number: string; quote_date: str
     right(String(l.quantity), M + 380, y, 9);
     right(`${fmtUSD(l.rate_amount)} / ${BASIS_WORD[l.rate_basis]}`, W - M - 90, y, 9, bold);
     right(`${fmtUSD(l.delivery_charge)} / ${fmtUSD(l.pickup_charge)}`, W - M - 6, y, 9);
-    y -= Math.max(1, d.length) * 11 + 8;
+    y -= Math.max(1, d.length) * 11 + 2;
+    const fees = (l.fees ?? []) as Array<{ description: string; amount: string }>;
+    if (fees.length) {
+      const f = wrap(`Plus per unit: ${fees.map((x) => `${x.description} ${fmtUSD(x.amount)}`).join("; ")}`, font, 8, 470);
+      f.forEach((s, i) => text(s, M + 14, y - i * 10, 8, font, MUTED));
+      y -= f.length * 10;
+    }
+    y -= 6;
     page.drawLine({ start: { x: M, y: y + 4 }, end: { x: W - M, y: y + 4 }, thickness: 0.4, color: RULE });
   }
   y -= 12;

@@ -6,6 +6,7 @@ export default async function Exports() {
     ["invoices", "Invoices", "Every invoice with its PO, billing period, totals, status and PDF fingerprint."],
     ["po-assignments", "PO assignments", "Full PO history per machine and month, including superseded and corrected POs."],
     ["rentals", "Rentals", "All rental agreements, units, dates, rates and Quipli references."],
+    ["fee-lines", "Fees and taxes", "Every fee and tax line on finalized invoices and sales, with its code, accounting class (regulatory tax or business surcharge) and GL account."],
     ["audit", "Audit log", "Every change: who, when, before and after."],
   ];
   return (

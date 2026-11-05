@@ -23,6 +23,8 @@ const MATRIX = {
   void_invoice: ["admin", "billing_manager"],
   record_payment: ["admin", "billing_manager", "billing_clerk"],
   configure_billing: ["admin"],
+  manage_fees: ["admin"],
+  override_fees: ["admin", "billing_manager"],
   manage_users: ["admin"],
   export_data: ["admin", "billing_manager", "billing_clerk"],
 } as const satisfies Record<string, readonly Role[]>;

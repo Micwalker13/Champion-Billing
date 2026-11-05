@@ -31,7 +31,7 @@ export default async function QuotePage({ params, searchParams }: { params: Prom
         <h2>Equipment</h2>
         <div className="table-wrap"><table>
           <thead><tr><th>Equipment</th><th>Unit</th><th>Dates</th><th className="num">Qty</th><th className="num">Rate</th><th className="num">Delivery / pickup</th>{edit && qt.status === "draft" && <th />}</tr></thead>
-          <tbody>{lines.map((l: any) => <tr key={l.id}><td>{l.description}{l.category && <div className="small muted">{l.category}</div>}</td><td className="mono">{l.unit_number ?? "Any"}</td>
+          <tbody>{lines.map((l: any) => <tr key={l.id}><td>{l.description}{l.category && <div className="small muted">{l.category}</div>}{(d.fees[l.id] ?? []).length > 0 && <div className="small muted">Plus per unit: {d.fees[l.id].map((f) => `${f.description} ${fmtUSD(f.amount)}`).join("; ")}</div>}</td><td className="mono">{l.unit_number ?? "Any"}</td>
             <td>{fmtDate(l.start_date)} – {l.end_date ? fmtDate(l.end_date) : "open"}</td><td className="num">{l.quantity}</td><td className="num">{fmtUSD(l.rate_amount)} {RATE_BASIS_LABELS[l.rate_basis as keyof typeof RATE_BASIS_LABELS]}</td>
             <td className="num">{fmtUSD(l.delivery_charge)} / {fmtUSD(l.pickup_charge)}</td>
             {edit && qt.status === "draft" && <td><form action={removeQuoteLineAction} className="inline"><H><input type="hidden" name="line_id" value={l.id} /><button className="btn-sm">Remove</button></H></form></td>}</tr>)}</tbody>

@@ -7,6 +7,8 @@ import { addDays, fmtDate, todayCentral } from "../dates";
 import { validatePoFormat } from "../po";
 import { LineContext, loadLineContext, unitSegments } from "./records";
 import { activePoForPeriod, ensureBillingPeriod } from "./pos";
+import { RdwDecision, rdwDecision } from "./insurance";
+import { applicableFees, computeFee, isExempt, rateOn } from "../fees";
 import { renderInvoicePdf } from "../pdf";
 
 export class DuplicateInvoiceError extends AppError {
@@ -27,7 +29,7 @@ export async function companySettings(db: Db = pool()) {
 
 // ───────────────────────── Calculation ─────────────────────────
 export interface DraftCalc {
-  lines: Array<{ kind: string; description: string; quantity: string; unit: string; unit_price: string; amount: string; taxable: boolean }>;
+  lines: Array<{ kind: string; description: string; quantity: string; unit: string; unit_price: string; amount: string; taxable: boolean; fee_type_id?: string; fee_category?: string }>;
   subtotal: string; taxable_amount: string; tax_rate: string; tax_amount: string; total: string;
   calc: Record<string, unknown>;
   oneTimeFeeIds: string[];
@@ -78,7 +80,8 @@ export function calculatePeriod(ctx: LineContext, period: { period_start: string
     }
   }
   const rentalAmount = dec(rc.amount);
-  if (p.damage_waiver_pct && !ctx.line.damage_waiver_waived && rentalAmount.gt(0)) {
+  const rdw = rdwDecision({ pct: p.damage_waiver_pct, choice: p.rdw_choice ?? "rdw", lineWaived: !!ctx.line.damage_waiver_waived, cois: ctx.cois ?? [], start: billed.start, end: billed.end });
+  if (rdw.status === "billed" && rentalAmount.gt(0)) {
     const amt = money(rentalAmount.mul(p.damage_waiver_pct));
     lines.push({ kind: "damage_waiver", description: `Damage waiver (${pctText(p.damage_waiver_pct)} of rental)`, quantity: "1.0000", unit: "each", unit_price: dec(amt).toFixed(4), amount: amt, taxable: ctx.line.taxable });
   }
@@ -93,6 +96,21 @@ export function calculatePeriod(ctx: LineContext, period: { period_start: string
   }
 
   const firstPeriod = billed.start === ctx.line.billing_start_date;
+  // Equipment fees and taxes (HET, TERP, surcharges): each one its own line, worked out for this billing cycle.
+  const feeNotes: Array<{ code: string; name: string; status: string }> = [];
+  if (ctx.feeSetup) {
+    const unit = segs.at(-1)?.equipment ?? ctx.equipment;
+    const fs = ctx.feeSetup;
+    const fees = applicableFees(fs.config.types, "rental", unit, fs.config.assignments, fs.unitSettings[String(unit.id)] ?? []);
+    for (const fee of fees) {
+      const o = computeFee({ fee, rate: rateOn(fs.config.rates, fee.id, billed.start), exempt: isExempt(fs.exemptions, fee.id, billed.start),
+        override: fs.overrides.find((x) => String(x.fee_type_id) === String(fee.id)) ?? null, base: rc.amount, firstPeriod, baseLabel: "rental" });
+      feeNotes.push({ code: fee.code, name: fee.name, status: o.status });
+      if (o.status === "billed" && dec(o.amount).gt(0))
+        lines.push({ kind: "equipment_fee", description: o.description, quantity: "1.0000", unit: "each", unit_price: dec(o.amount).toFixed(4), amount: o.amount,
+          taxable: fee.taxable && !!ctx.line.taxable, fee_type_id: fee.id, fee_category: fee.category });
+    }
+  }
   if (firstPeriod && ctx.line.billing_start_date === ctx.line.on_rent_date && dec(ctx.line.delivery_charge).gt(0)) {
     lines.push({ kind: "delivery", description: "Delivery", quantity: "1.0000", unit: "each", unit_price: dec(ctx.line.delivery_charge).toFixed(4), amount: money(ctx.line.delivery_charge), taxable: ctx.line.taxable });
   }
@@ -117,7 +135,7 @@ export function calculatePeriod(ctx: LineContext, period: { period_start: string
     lines, subtotal: money(subtotal), taxable_amount: money(taxable), tax_rate: taxRate, tax_amount: tax, total: total.toFixed(2), oneTimeFeeIds,
     calc: { method: ctx.method, rate_basis: ctx.rateBasis, rate: ctx.line.rate_amount, proration_policy: ctx.profile.proration_policy,
       billed_days: rc.billedDays, period_days: rc.periodDays, partial: rc.isPartial, nominal: bp.nominal, explanation: rc.explanation,
-      overtime, fuel_gallons: gallons.toFixed(1), fuel_unpriced: gallons.gt(0) && !p.fuel_price_per_gallon },
+      overtime, rdw, fees: feeNotes, fuel_gallons: gallons.toFixed(1), fuel_unpriced: gallons.gt(0) && !p.fuel_price_per_gallon },
   };
 }
 
@@ -147,8 +165,8 @@ async function writeLines(db: Db, invoiceId: string, lines: DraftCalc["lines"]) 
   await db.query(`DELETE FROM invoice_lines WHERE invoice_id=$1`, [invoiceId]);
   let n = 1;
   for (const l of lines) {
-    await db.query(`INSERT INTO invoice_lines(invoice_id,line_no,kind,description,quantity,unit,unit_price,amount,taxable) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-      [invoiceId, n++, l.kind, l.description, l.quantity, l.unit, l.unit_price, l.amount, l.taxable]);
+    await db.query(`INSERT INTO invoice_lines(invoice_id,line_no,kind,description,quantity,unit,unit_price,amount,taxable,fee_type_id,fee_category) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+      [invoiceId, n++, l.kind, l.description, l.quantity, l.unit, l.unit_price, l.amount, l.taxable, l.fee_type_id ?? null, l.fee_category ?? null]);
   }
 }
 
@@ -386,6 +404,22 @@ export async function validateInvoice(id: string, db: Db = pool()): Promise<Chec
   }
   if (!inv.finalized_at && inv.calc_details?.fuel_unpriced)
     add("fuel_price", "Fuel price", "warn", "Fuel gallons were entered but no fuel price per gallon is set for this customer, so fuel isn't billed. Set the price on the customer page and recalculate, or approve the exception.");
+
+  // 13b. Damage waiver vs certificate of insurance
+  const rdw = inv.calc_details?.rdw as RdwDecision | undefined;
+  if (rdw?.status === "waived_coi")
+    add("damage_waiver", "Damage waiver", "info", `Not billed: ${rdw.coi.insurer} certificate${rdw.coi.policy_number ? ` (policy ${rdw.coi.policy_number})` : ""} covers this period, valid through ${fmtDate(rdw.coi.expires_on)}.`, false);
+  else if (rdw?.status === "billed" && rdw.reason !== "rdw")
+    add("damage_waiver", "Damage waiver", "info", rdw.reason === "no_coi"
+      ? `Billed: ${ctx.customer.name} is set to use their own insurance, but no certificate is on file. Upload one on the customer page and recalculate to remove the waiver.`
+      : `Billed: ${ctx.customer.name}'s certificate on file (valid ${fmtDate(rdw.latest!.effective_on)} to ${fmtDate(rdw.latest!.expires_on)}) doesn't cover this whole period. Upload a current certificate and recalculate to remove the waiver.`, false);
+  else if (rdw?.status === "waived_line")
+    add("damage_waiver", "Damage waiver", "info", "Not billed: waived on this rental.", false);
+
+  // 13c. Equipment fees and taxes with no rate for this period
+  const noRate = ((inv.calc_details?.fees ?? []) as Array<{ code: string; name: string; status: string }>).filter((f) => f.status === "no_rate");
+  if (!inv.finalized_at && noRate.length)
+    add("fee_rate", "Equipment fee rates", "warn", `${noRate.map((f) => `${f.name} (${f.code})`).join(", ")} applies to this unit but has no rate in effect for this period, so it isn't billed. Add the rate under Settings → Fees and taxes and recalculate, or approve the exception.`);
 
   // 14. Placeholders
   if (snap.company?.is_placeholder || snap.tax?.is_placeholder)

@@ -125,3 +125,4 @@ details > summary { cursor: pointer; font-weight: 600; }
   .topbar h1 { font-size: 19px; }
 }
 button:disabled, button:disabled:hover { opacity: .45; cursor: not-allowed; }
+.btn-link { background: none; border: 0; padding: 0 0 0 4px; color: inherit; cursor: pointer; font-weight: 700; }
