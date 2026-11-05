@@ -19,6 +19,7 @@ import { createSale, finalizeSale, recordSalePayment, voidSale } from "@/lib/ser
 import { issueCredit } from "@/lib/services/credits";
 import { emailCredit, emailInvoice, emailMonth, setInvoiceEmails } from "@/lib/services/email";
 import { saveUsage, setDamageWaiverWaived, updateUsageSettings } from "@/lib/services/usage";
+import { acceptQuote, addQuoteLine, assignReservationUnit, cancelReservation, cancelTicket, completeTicket, convertReservation, createQuote, createReservation, declineQuote, markQuoteSent, removeQuoteLine, scheduleTicket } from "@/lib/services/dispatch";
 import { addWorkOrderLine, cancelWorkOrder, completeWorkOrder, createServiceInterval, createWorkOrder, linkWorkOrderRental, removeWorkOrderLine, setIntervalActive, updateWorkOrder } from "@/lib/services/shop";
 import { fmtDate } from "@/lib/dates";
 
@@ -434,4 +435,68 @@ export async function createIntervalAction(fd: FormData) {
 }
 export async function intervalActiveAction(fd: FormData) {
   await run(fd, "/shop", async (u) => { const on = str(fd, "active") === "true"; await setIntervalActive(u, str(fd, "interval_id"), on); return on ? "Service schedule turned back on." : "Service schedule turned off."; });
+}
+
+// ───────── Delivery / pickup tickets
+export async function scheduleTicketAction(fd: FormData) {
+  await run(fd, "/dispatch", async (u) => {
+    const t = await scheduleTicket(u, str(fd, "line_id"), { kind: str(fd, "kind"), scheduled_date: str(fd, "scheduled_date"), time_window: str(fd, "time_window"), driver: str(fd, "driver"), truck: str(fd, "truck"), site_contact: str(fd, "site_contact"), instructions: str(fd, "instructions") });
+    return `${t.kind === "delivery" ? "Delivery" : "Pickup"} ${t.ticket_number} scheduled.`;
+  });
+}
+export async function completeTicketAction(fd: FormData) {
+  await run(fd, "/dispatch", async (u) => {
+    const t = await completeTicket(u, str(fd, "ticket_id"), { signed_by: str(fd, "signed_by"), signature: str(fd, "signature"), hours: str(fd, "hours"), fuel_level: str(fd, "fuel_level"), condition_notes: str(fd, "condition_notes") });
+    return `${t.ticket_number} signed. The signed PDF is saved.`;
+  });
+}
+export async function cancelTicketAction(fd: FormData) {
+  await run(fd, "/dispatch", async (u) => { await cancelTicket(u, str(fd, "ticket_id"), str(fd, "reason")); return "Ticket cancelled."; });
+}
+
+// ───────── Quotes and reservations
+export async function createQuoteAction(fd: FormData) {
+  await run(fd, "/quotes", async (u) => {
+    const qt = await createQuote(u, { customer_id: str(fd, "customer_id"), valid_days: str(fd, "valid_days"), jobsite: str(fd, "jobsite"), contact: str(fd, "contact"), notes: str(fd, "notes") });
+    return { to: `/quotes/${qt.id}`, msg: `Quote ${qt.quote_number} started. Add the equipment below.` };
+  });
+}
+const qBack = (fd: FormData) => `/quotes/${str(fd, "quote_id")}`;
+export async function addQuoteLineAction(fd: FormData) {
+  await run(fd, qBack(fd), async (u) => {
+    await addQuoteLine(u, str(fd, "quote_id"), { description: str(fd, "description"), category: str(fd, "category"), unit_number: str(fd, "unit_number"), quantity: str(fd, "quantity") || "1",
+      rate_amount: str(fd, "rate_amount"), rate_basis: str(fd, "rate_basis"), start_date: str(fd, "start_date"), end_date: str(fd, "end_date"), delivery_charge: str(fd, "delivery_charge"), pickup_charge: str(fd, "pickup_charge") });
+    return "Line added.";
+  });
+}
+export async function removeQuoteLineAction(fd: FormData) {
+  await run(fd, qBack(fd), async (u) => { await removeQuoteLine(u, str(fd, "quote_id"), str(fd, "line_id")); return "Line removed."; });
+}
+export async function sendQuoteAction(fd: FormData) {
+  await run(fd, qBack(fd), async (u) => { await markQuoteSent(u, str(fd, "quote_id")); return "Quote marked as sent. Its prices are now locked."; });
+}
+export async function acceptQuoteAction(fd: FormData) {
+  await run(fd, qBack(fd), async (u) => { const r = await acceptQuote(u, str(fd, "quote_id"), str(fd, "note")); return `Quote accepted. ${r.length} reservation${r.length === 1 ? "" : "s"} created.`; });
+}
+export async function declineQuoteAction(fd: FormData) {
+  await run(fd, qBack(fd), async (u) => { await declineQuote(u, str(fd, "quote_id"), str(fd, "note")); return "Quote marked declined."; });
+}
+export async function createReservationAction(fd: FormData) {
+  await run(fd, "/reservations", async (u) => {
+    await createReservation(u, { customer_id: str(fd, "customer_id"), unit_number: str(fd, "unit_number"), category: str(fd, "category"), description: str(fd, "description"),
+      start_date: str(fd, "start_date"), end_date: str(fd, "end_date"), rate_amount: str(fd, "rate_amount"), rate_basis: str(fd, "rate_basis"), notes: str(fd, "notes") });
+    return "Reserved.";
+  });
+}
+export async function assignReservationAction(fd: FormData) {
+  await run(fd, "/reservations", async (u) => { await assignReservationUnit(u, str(fd, "reservation_id"), str(fd, "unit_number")); return "Unit assigned to the reservation."; });
+}
+export async function cancelReservationAction(fd: FormData) {
+  await run(fd, "/reservations", async (u) => { await cancelReservation(u, str(fd, "reservation_id"), str(fd, "reason")); return "Reservation cancelled."; });
+}
+export async function convertReservationAction(fd: FormData) {
+  await run(fd, "/reservations", async (u) => {
+    const { lineId } = await convertReservation(u, str(fd, "reservation_id"), { contract_number: str(fd, "contract_number"), start_date: str(fd, "start_date") || undefined });
+    return { to: `/rentals/${lineId}`, msg: "Rental created from the reservation. Schedule the delivery below." };
+  });
 }
