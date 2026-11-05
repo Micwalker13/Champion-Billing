@@ -409,3 +409,105 @@ export async function renderCreditMemoPdf(memo: { credit_number: string; credit_
   if (s.company?.is_placeholder) text("PLACEHOLDER company details - confirm in Settings before sending to customers.", M, 28, 8, bold, rgb(0.75, 0.1, 0.1));
   return doc.save({ useObjectStreams: false });
 }
+
+// ───────────────────────── Delivery / pickup ticket ─────────────────────────
+async function startDoc(title: string, when: Date) {
+  const doc = await PDFDocument.create();
+  doc.setTitle(title); doc.setCreator("Champion Billing"); doc.setProducer("Champion Billing");
+  doc.setCreationDate(when); doc.setModificationDate(when);
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  const bold = await doc.embedFont(StandardFonts.HelveticaBold);
+  const W = 612, H = 792, M = 40;
+  const page = doc.addPage([W, H]);
+  const text = (t: unknown, x: number, y: number, size = 9, f = font, color = INK) => page.drawText(clean(t), { x, y, size, font: f, color });
+  const right = (t: unknown, xr: number, y: number, size = 9, f = font, color = INK) => page.drawText(clean(t), { x: xr - f.widthOfTextAtSize(clean(t), size), y, size, font: f, color });
+  return { doc, page, font, bold, W, H, M, text, right };
+}
+
+export async function renderTicketPdf(t: {
+  ticket_number: string; kind: "delivery" | "pickup"; scheduled_date: string; completed_at: Date; company: any; customer: any; contract_number: string;
+  unit: any; site_address: string | null; site_contact: string | null; driver: string | null; truck: string | null; instructions: string | null;
+  hours: string | null; fuel_level: string | null; condition_notes: string | null; signed_by: string; signature_png: Buffer;
+}): Promise<Uint8Array> {
+  const { doc, page, font, bold, W, H, M, text, right } = await startDoc(`${t.kind === "delivery" ? "Delivery" : "Pickup"} ticket ${t.ticket_number}`, t.completed_at);
+  let y = H - M;
+  text(t.company?.legal_name, M, y - 14, 18, bold, ACCENT);
+  [t.company?.address_line1, t.company?.city_state_zip, t.company?.phone].filter(Boolean).forEach((l, i) => text(l, M, y - 30 - i * 11, 9, font, MUTED));
+  right(t.kind === "delivery" ? "DELIVERY TICKET" : "PICKUP TICKET", W - M, y - 14, 16, bold);
+  ([["Ticket #", t.ticket_number], ["Date", fmtDate(t.scheduled_date)], ["Rental agreement", t.contract_number]] as Array<[string, string]>)
+    .forEach(([k, v], i) => { right(k, W - M - 120, y - 34 - i * 12, 9, font, MUTED); right(v, W - M, y - 34 - i * 12, 9, bold); });
+  y -= 100;
+  page.drawLine({ start: { x: M, y: y + 10 }, end: { x: W - M, y: y + 10 }, thickness: 0.6, color: RULE });
+  const rows: Array<[string, string]> = [
+    ["Customer", `${t.customer.name} (${t.customer.customer_code})`],
+    ["Unit", `${t.unit.unit_number}  ${t.unit.description}${t.unit.serial_number ? `  S/N ${t.unit.serial_number}` : ""}`],
+    ["Jobsite", t.site_address ?? "-"], ["Site contact", t.site_contact ?? "-"],
+    ["Driver / truck", [t.driver, t.truck].filter(Boolean).join(" / ") || "-"],
+    ["Hour meter", t.hours ?? "-"], ["Fuel level", t.fuel_level ?? "-"],
+    ["Condition", t.condition_notes ?? "No damage noted"], ["Instructions", t.instructions ?? "-"],
+  ];
+  for (const [k, v] of rows) {
+    const lines = wrap(v, font, 10, W - 2 * M - 110);
+    text(k, M, y, 9, font, MUTED);
+    lines.forEach((l, i) => text(l, M + 110, y - i * 13, 10, k === "Unit" || k === "Customer" ? bold : font));
+    y -= Math.max(1, lines.length) * 13 + 8;
+  }
+  y -= 10;
+  const statement = t.kind === "delivery"
+    ? "Received the equipment above in good working order, with the hour meter and fuel level shown, unless noted under Condition."
+    : "Released the equipment above to Champion Equipment for return, with the hour meter, fuel level and condition shown.";
+  wrap(statement, font, 9, W - 2 * M).forEach((l, i) => text(l, M, y - i * 12, 9, font, MUTED));
+  y -= 40;
+  const png = await doc.embedPng(t.signature_png);
+  const sw = 220, sh = Math.min(80, (png.height / png.width) * sw);
+  page.drawImage(png, { x: M, y: y - sh, width: sw, height: sh });
+  y -= sh + 6;
+  page.drawLine({ start: { x: M, y }, end: { x: M + 260, y }, thickness: 0.8, color: INK });
+  text(`Signed by ${t.signed_by}`, M, y - 13, 9, bold);
+  text(`${t.completed_at.toLocaleString("en-US", { timeZone: "America/Chicago" })} Central`, M, y - 25, 8, font, MUTED);
+  return doc.save({ useObjectStreams: false });
+}
+
+// ───────────────────────── Quote ─────────────────────────
+const BASIS_WORD: Record<string, string> = { daily: "day", weekly: "week", cycle_28: "28 days", cycle_30: "30 days", monthly: "month" };
+export async function renderQuotePdf(qt: { quote_number: string; quote_date: string; valid_until: string; jobsite: string | null; contact: string | null; notes: string | null; created_at: Date },
+  lines: any[], company: any, customer: any): Promise<Uint8Array> {
+  const { doc, page, font, bold, W, H, M, text, right } = await startDoc(`Quote ${qt.quote_number}`, qt.created_at);
+  let y = H - M;
+  text(company?.legal_name, M, y - 14, 18, bold, ACCENT);
+  [company?.address_line1, company?.address_line2, company?.city_state_zip, [company?.phone, company?.email].filter(Boolean).join("  |  ")].filter(Boolean)
+    .forEach((l, i) => text(l, M, y - 30 - i * 11, 9, font, MUTED));
+  right("RENTAL QUOTE", W - M, y - 14, 18, bold);
+  ([["Quote #", qt.quote_number], ["Date", fmtDate(qt.quote_date)], ["Good through", fmtDate(qt.valid_until)]] as Array<[string, string]>)
+    .forEach(([k, v], i) => { right(k, W - M - 110, y - 34 - i * 12, 9, font, MUTED); right(v, W - M, y - 34 - i * 12, 9, bold); });
+  y -= 110;
+  text("PREPARED FOR", M, y, 8, bold, MUTED);
+  text(customer.name, M, y - 13, 10, bold);
+  wrap(customer.billing_address ?? "", font, 9, 250).forEach((l, i) => text(l, M, y - 25 - i * 11, 9));
+  if (qt.jobsite) { text("JOBSITE", M + 290, y, 8, bold, MUTED); wrap(qt.jobsite, font, 9, 230).forEach((l, i) => text(l, M + 290, y - 13 - i * 11, 9)); }
+  if (qt.contact) text(`Attn: ${qt.contact}`, M, y - 70, 9);
+  y -= 95;
+  page.drawRectangle({ x: M, y: y - 4, width: W - 2 * M, height: 16, color: rgb(0.95, 0.96, 0.97) });
+  text("Equipment", M + 6, y, 8, bold, MUTED); text("Dates", M + 250, y, 8, bold, MUTED);
+  right("Qty", M + 380, y, 8, bold, MUTED); right("Rate", W - M - 90, y, 8, bold, MUTED); right("Deliver / pick up", W - M - 6, y, 8, bold, MUTED);
+  y -= 18;
+  for (const l of lines) {
+    const d = wrap(`${l.description}${l.category ? ` (${l.category})` : ""}`, font, 9, 235);
+    d.forEach((s, i) => text(s, M + 6, y - i * 11, 9));
+    text(`${fmtDate(l.start_date)}${l.end_date ? ` - ${fmtDate(l.end_date)}` : " - open"}`, M + 250, y, 9);
+    right(String(l.quantity), M + 380, y, 9);
+    right(`${fmtUSD(l.rate_amount)} / ${BASIS_WORD[l.rate_basis]}`, W - M - 90, y, 9, bold);
+    right(`${fmtUSD(l.delivery_charge)} / ${fmtUSD(l.pickup_charge)}`, W - M - 6, y, 9);
+    y -= Math.max(1, d.length) * 11 + 8;
+    page.drawLine({ start: { x: M, y: y + 4 }, end: { x: W - M, y: y + 4 }, thickness: 0.4, color: RULE });
+  }
+  y -= 12;
+  const terms = [
+    "Rates are per unit and exclude sales tax.",
+    "Availability is confirmed when the quote is accepted and the equipment is reserved.",
+    qt.notes ?? "",
+  ].filter(Boolean);
+  for (const t of terms) { const w = wrap(t, font, 8.5, W - 2 * M); w.forEach((s, i) => text(s, M, y - i * 11, 8.5, font, MUTED)); y -= w.length * 11 + 4; }
+  if (company?.is_placeholder) text("PLACEHOLDER company details - confirm in Settings before sending to customers.", M, 28, 8, bold, rgb(0.75, 0.1, 0.1));
+  return doc.save({ useObjectStreams: false });
+}

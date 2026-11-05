@@ -10,8 +10,9 @@ import { fmtUSD } from "@/lib/money";
 import { addMonths, fmtDate, monthLabel, monthStart, todayCentral } from "@/lib/dates";
 import { BILLING_METHOD_LABELS, RATE_BASIS_LABELS, lastBillableDay } from "@/lib/billing";
 import { Flash, RentalBadge, StatusBadge, Empty } from "@/components/ui";
-import { damageWaiverAction, assignPoAction, changeLineStatusAction, exchangeUnitAction, generateInvoiceAction, removePoAction, updateTermsAction, uploadDocumentAction } from "../../../actions";
+import { scheduleTicketAction, damageWaiverAction, assignPoAction, changeLineStatusAction, exchangeUnitAction, generateInvoiceAction, removePoAction, updateTermsAction, uploadDocumentAction } from "../../../actions";
 import { availableUnits, exchangesForLine, listYards } from "@/lib/services/inventory";
+import { TICKET_STATUS_LABELS, listTickets } from "@/lib/services/dispatch";
 
 export default async function RentalPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<Record<string, string>> }) {
   const user = await requireUser();
@@ -21,6 +22,7 @@ export default async function RentalPage({ params, searchParams }: { params: Pro
   const ctx = await loadLineContext(id).catch(() => null);
   if (!ctx) notFound();
   const { line, contract, customer, profile, equipment, jobsite, fees } = ctx;
+  const tickets = await listTickets({ lineId: id });
   const [history, invoices, docs, exchanges, spares, yards] = await Promise.all([
     poHistoryForLine(id),
     q(`SELECT id, invoice_number, status, po_number, period_start, period_end, total, revision_no FROM invoices WHERE contract_line_id=$1 ORDER BY period_start DESC, id DESC`, [id]),
@@ -141,6 +143,27 @@ export default async function RentalPage({ params, searchParams }: { params: Pro
               </H></form></details>
           </>}
         </div>
+      </div>
+
+      <div className="card">
+        <h2>Delivery and pickup</h2>
+        <div className="table-wrap"><table>
+          <thead><tr><th>Ticket</th><th>Date</th><th>Status</th><th>Signed by</th><th className="num">Hours</th><th /></tr></thead>
+          <tbody>{tickets.map((t: any) => <tr key={t.id}><td><a href={`/dispatch/${t.id}`}>{t.ticket_number}</a> {t.kind === "delivery" ? "Delivery" : "Pickup"}</td><td>{fmtDate(t.scheduled_date)}</td>
+            <td>{TICKET_STATUS_LABELS[t.status]}</td><td>{t.signed_by ?? "—"}</td><td className="num">{t.hours ?? "—"}</td>
+            <td>{t.status === "completed" && <a href={`/api/tickets/${t.id}/pdf`} target="_blank" rel="noopener">PDF</a>}</td></tr>)}</tbody>
+        </table>{!tickets.length && <Empty>No delivery or pickup tickets.</Empty>}</div>
+        {can(user, "edit_records") && ["active", "off_rent"].includes(line.status) && (
+          <details style={{ marginTop: 10 }}><summary>Schedule {line.status === "off_rent" ? "the pickup" : "a delivery or pickup"}</summary>
+            <form action={scheduleTicketAction} className="row" style={{ marginTop: 6 }}><H>
+              <div className="field"><label>Type</label><select name="kind" defaultValue={line.status === "off_rent" ? "pickup" : "delivery"}><option value="delivery">Delivery</option><option value="pickup">Pickup</option></select></div>
+              <div className="field"><label>Date</label><input type="date" name="scheduled_date" required defaultValue={line.status === "off_rent" ? line.off_rent_date : line.on_rent_date} /></div>
+              <div className="field"><label>Time</label><input name="time_window" /></div>
+              <div className="field"><label>Driver</label><input name="driver" /></div>
+              <div className="field"><label>Site contact</label><input name="site_contact" /></div>
+              <div className="field" style={{ flexBasis: 240 }}><label>Instructions</label><input name="instructions" /></div>
+              <button>Schedule</button>
+            </H></form></details>)}
       </div>
 
       <div className="card">
