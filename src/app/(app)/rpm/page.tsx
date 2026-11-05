@@ -6,7 +6,8 @@ import { addMonths, monthLabel, monthStart, todayCentral } from "@/lib/dates";
 import { fmtUSD } from "@/lib/money";
 import { Flash, Kpi, StatusBadge, RentalBadge, Empty } from "@/components/ui";
 import { STATUS_LABELS } from "@/lib/services/invoices";
-import { assignPoAction, bulkApproveAction, bulkSubmitAction, generateMonthAction } from "../../actions";
+import { assignPoAction, bulkApproveAction, bulkSubmitAction, emailMonthAction, generateMonthAction } from "../../actions";
+import { emailEnabled } from "@/lib/services/email";
 
 export default async function RpmBoard({ searchParams }: { searchParams: Promise<Record<string, string>> }) {
   const user = await requireUser();
@@ -51,6 +52,7 @@ export default async function RpmBoard({ searchParams }: { searchParams: Promise
           {can(user, "submit_invoice") && <form action={bulkSubmitAction} className="inline"><input type="hidden" name="customer_id" value={customerId} /><input type="hidden" name="month" value={month} /><input type="hidden" name="back" value={back} /><button>Submit all drafts for review</button></form>}
           {can(user, "approve_invoice") && <form action={bulkApproveAction} className="inline"><input type="hidden" name="customer_id" value={customerId} /><input type="hidden" name="month" value={month} /><input type="hidden" name="back" value={back} /><button>Approve all that pass checks</button></form>}
           {finalCount > 0 && <a className="btn" href={`/api/packet?customer=${customerId}&month=${ym}`} target="_blank">Download all {finalCount} approved invoices (one PDF)</a>}
+          {finalCount > 0 && can(user, "issue_invoice") && emailEnabled() && <form action={emailMonthAction} className="inline"><input type="hidden" name="customer_id" value={customerId} /><input type="hidden" name="month" value={month} /><input type="hidden" name="back" value={back} /><button>Email approved invoices not yet sent</button></form>}
           <a className="btn" href={`/api/statements/${customerId}`} target="_blank">Statement PDF</a>
           {imports.length > 0 && <span className="muted small">Imports this month: {imports.map((i: any) => <a key={i.id} href={`/imports/${i.id}`} style={{ marginRight: 6 }}>#{i.id} ({i.status})</a>)}</span>}
         </div>

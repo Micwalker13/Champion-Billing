@@ -3,13 +3,13 @@ import { can } from "@/lib/permissions";
 import { q } from "@/lib/db";
 import { fmtUSD } from "@/lib/money";
 import { fmtDate, isIsoDate, monthLabel, monthStart, todayCentral } from "@/lib/dates";
-import { Kpi, RentalBadge, StatusBadge, Empty } from "@/components/ui";
-import { AGING_BUCKETS, BUCKET_LABELS, agingReport, rentalActivity } from "@/lib/services/reports";
+import { Kpi, RentalBadge, StatusBadge, UnitStatus, Empty } from "@/components/ui";
+import { AGING_BUCKETS, BUCKET_LABELS, agingReport, rentalActivity, utilization } from "@/lib/services/reports";
 
 export default async function Reports({ searchParams }: { searchParams: Promise<Record<string, string>> }) {
   const user = await requireUser();
   const sp = await searchParams;
-  const tab = sp.tab === "activity" ? "activity" : "aging";
+  const tab = sp.tab === "activity" ? "activity" : sp.tab === "utilization" ? "utilization" : "aging";
   const asOf = isIsoDate(sp.asOf ?? "") ? sp.asOf : todayCentral();
   const month = /^\d{4}-\d{2}$/.test(sp.month ?? "") ? `${sp.month}-01` : monthStart(todayCentral());
   const customers = await q(`SELECT id, name FROM customers WHERE active ORDER BY name`);
@@ -21,9 +21,10 @@ export default async function Reports({ searchParams }: { searchParams: Promise<
         <div className="actions">
           <a className={`btn ${tab === "aging" ? "btn-primary" : ""}`} href="/reports?tab=aging">Money owed (aging)</a>
           <a className={`btn ${tab === "activity" ? "btn-primary" : ""}`} href="/reports?tab=activity">Rental activity</a>
+          <a className={`btn ${tab === "utilization" ? "btn-primary" : ""}`} href="/reports?tab=utilization">Utilization</a>
         </div>
       </div>
-      {tab === "aging" ? <Aging asOf={asOf} showInvoices={sp.customer} canExport={canExport} /> : <Activity month={month} customerId={sp.customer} customers={customers} canExport={canExport} />}
+      {tab === "aging" ? <Aging asOf={asOf} showInvoices={sp.customer} canExport={canExport} /> : tab === "utilization" ? <Utilization month={month} /> : <Activity month={month} customerId={sp.customer} customers={customers} canExport={canExport} />}
     </>
   );
 }
@@ -70,13 +71,13 @@ async function Aging({ asOf, showInvoices, canExport }: { asOf: string; showInvo
         <div className="card">
           <h2>Open invoices: {r.customers.find((c) => c.customer_id === showInvoices)?.customer_name ?? "customer"}</h2>
           <div className="table-wrap"><table>
-            <thead><tr><th>Invoice</th><th>Status</th><th>Unit</th><th>PO</th><th>Period</th><th>Due</th><th className="num">Days late</th><th className="num">Total</th><th className="num">Paid</th><th className="num">Balance</th></tr></thead>
+            <thead><tr><th>Invoice</th><th>Status</th><th>Unit</th><th>PO</th><th>Period</th><th>Due</th><th className="num">Days late</th><th className="num">Total</th><th className="num">Paid / credited</th><th className="num">Balance</th></tr></thead>
             <tbody>{r.invoices.filter((i) => i.customer_id === showInvoices).map((i) => (
               <tr key={`${i.kind}${i.id}`}>
                 <td><a href={i.href}>{i.invoice_number}</a>{i.kind === "sale" && <div className="small muted">Equipment sale</div>}</td><td><StatusBadge status={i.status} /></td><td>{i.unit}</td><td className="mono">{i.po_number ?? "—"}</td>
                 <td className="nowrap">{fmtDate(i.period_start)} – {fmtDate(i.period_end)}</td><td>{fmtDate(i.due_date)}</td>
                 <td className="num" style={i.days_past_due > 0 ? { color: "var(--bad)" } : undefined}>{i.days_past_due || "—"}</td>
-                <td className="num">{fmtUSD(i.total)}</td><td className="num">{fmtUSD(i.amount_paid)}</td><td className="num"><b>{fmtUSD(i.balance)}</b></td>
+                <td className="num">{fmtUSD(i.total)}</td><td className="num">{fmtUSD(i.amount_paid)}{Number(i.amount_credited) > 0 && <div className="small muted">+{fmtUSD(i.amount_credited)} credit</div>}</td><td className="num"><b>{fmtUSD(i.balance)}</b></td>
               </tr>
             ))}</tbody>
           </table></div>
@@ -119,6 +120,42 @@ async function Activity({ month, customerId, customers, canExport }: { month: st
             ))}</tbody>
           </table></div>
         ) : <Empty>No machines were on rent in {monthLabel(month)}.</Empty>}
+      </div>
+    </>
+  );
+}
+
+async function Utilization({ month }: { month: string }) {
+  const r = await utilization(month);
+  const ym = month.slice(0, 7);
+  const bar = (pct: number) => <div className="progress" style={{ minWidth: 80 }}><div style={{ width: `${Math.min(pct, 100)}%` }} /></div>;
+  return (
+    <>
+      <form className="row card" method="get" style={{ alignItems: "flex-end" }}>
+        <input type="hidden" name="tab" value="utilization" />
+        <div className="field"><label htmlFor="month">Month</label><input id="month" type="month" name="month" defaultValue={ym} /></div>
+        <button>Show</button>
+      </form>
+      <div className="kpis">
+        <Kpi label="Fleet utilization" value={`${r.totals.time_pct}%`} sub={`of ${r.totals.units} units × ${r.monthDays} days`} />
+        <Kpi label="Rental billed (before tax)" value={fmtUSD(r.totals.revenue)} sub="approved invoices only" />
+        <Kpi label="Idle all month" value={r.totals.idle} tone={r.totals.idle ? "warn" : "ok"} />
+      </div>
+      <div className="card">
+        <h2>By category</h2>
+        <div className="table-wrap"><table>
+          <thead><tr><th>Category</th><th className="num">Units</th><th>Time on rent</th><th className="num">Rental billed</th></tr></thead>
+          <tbody>{r.categories.map((c) => <tr key={c.category}><td>{c.category}</td><td className="num">{c.units}</td><td><div className="row" style={{ gap: 8, alignItems: "center", flexWrap: "nowrap" }}>{bar(c.time_pct)}<span>{c.time_pct}%</span></div></td><td className="num">{fmtUSD(c.revenue)}</td></tr>)}</tbody>
+        </table></div>
+      </div>
+      <div className="card">
+        <h2>By unit: {monthLabel(month)}</h2>
+        <p className="muted small">Days on rent follow exchanges, so each day counts for the machine actually on site. Rental billed is the rental line of approved invoices, split by the days each unit was there; tax, delivery and fees are left out.</p>
+        {r.rows.length ? <div className="table-wrap"><table>
+          <thead><tr><th>Unit</th><th>Category</th><th>Status now</th><th>Yard</th><th className="num">Days on rent</th><th>Time on rent</th><th className="num">Rental billed</th></tr></thead>
+          <tbody>{r.rows.map((u: any) => <tr key={u.id}><td><a className="mono" href={`/equipment/${u.id}`}>{u.unit_number}</a><div className="small muted">{u.description}</div></td><td>{u.category ?? "—"}</td><td><UnitStatus status={u.status} /></td><td>{u.yard_name ?? "—"}</td>
+            <td className="num">{u.days_on_rent}</td><td><div className="row" style={{ gap: 8, alignItems: "center", flexWrap: "nowrap" }}>{bar(u.time_pct)}<span>{u.time_pct}%</span></div></td><td className="num">{fmtUSD(u.revenue)}</td></tr>)}</tbody>
+        </table></div> : <Empty>No units yet.</Empty>}
       </div>
     </>
   );

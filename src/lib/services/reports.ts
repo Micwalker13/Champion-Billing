@@ -5,9 +5,10 @@ import { AppError, Db, one, pool, q } from "../db";
 import { D, Dec, cents, dec } from "../money";
 import { diffDays, maxDate, minDate, monthEnd, monthStart, todayCentral, daysInclusive } from "../dates";
 import { invoicePdf, refreshOverdue } from "./invoices";
+import { loadLineContext, unitSegments } from "./records";
 
 /** Finalized invoices that can still owe money. Drafts, voided and replaced invoices never count. */
-const OPEN_STATUSES = ["approved", "issued", "partially_paid", "overdue"];
+const OPEN_STATUSES = ["approved", "issued", "partially_paid", "overdue"]; // "credited" and "paid" have no balance
 
 export const AGING_BUCKETS = ["current", "d1_30", "d31_60", "d61_90", "d90_plus"] as const;
 export type Bucket = (typeof AGING_BUCKETS)[number];
@@ -27,7 +28,7 @@ const asStrings = (t: Record<string, Dec>) => Object.fromEntries(Object.entries(
 export interface OpenInvoice {
   id: string; invoice_number: string; customer_id: string; customer_name: string; customer_code: string; status: string;
   invoice_date: string; due_date: string; period_start: string; period_end: string; po_number: string | null; unit: string; contract: string;
-  total: string; amount_paid: string; balance: string; days_past_due: number; bucket: Bucket;
+  total: string; amount_paid: string; amount_credited: string; balance: string; days_past_due: number; bucket: Bucket;
   /** "rental" invoices live under /invoices, "sale" invoices (equipment sold) under /sales. */
   kind: "rental" | "sale"; href: string;
 }
@@ -35,18 +36,18 @@ export interface OpenInvoice {
 export async function openInvoices(asOf = todayCentral(), customerId?: string | null, db: Db = pool()): Promise<OpenInvoice[]> {
   const rows = await q(
     `SELECT i.id, i.invoice_number, i.customer_id, c.name AS customer_name, c.customer_code, i.status, i.invoice_date, i.due_date, i.period_start, i.period_end,
-            i.po_number, i.snapshot->'equipment'->>'unit_number' AS unit, i.snapshot->'contract'->>'number' AS contract, i.total, i.amount_paid
+            i.po_number, i.snapshot->'equipment'->>'unit_number' AS unit, i.snapshot->'contract'->>'number' AS contract, i.total, i.amount_paid, i.amount_credited
      FROM invoices i JOIN customers c ON c.id=i.customer_id
      WHERE i.status = ANY($1) AND i.invoice_date <= $2 AND ($3::bigint IS NULL OR i.customer_id=$3)
      UNION ALL
      SELECT s.id, s.sale_number, s.customer_id, c.name, c.customer_code, s.status, s.sale_date, s.due_date, s.sale_date, s.sale_date,
-            NULL, e.unit_number, 'Equipment sale', s.total, s.amount_paid
+            NULL, e.unit_number, 'Equipment sale', s.total, s.amount_paid, 0
      FROM equipment_sales s JOIN customers c ON c.id=s.customer_id JOIN equipment e ON e.id=s.equipment_id
      WHERE s.status IN ('issued','partially_paid') AND s.sale_date <= $2 AND ($3::bigint IS NULL OR s.customer_id=$3)
      ORDER BY 4, 8, 2`, [OPEN_STATUSES, asOf, customerId || null], db);
   return rows
     .map((r) => {
-      const balance = cents(dec(r.total).sub(dec(r.amount_paid)));
+      const balance = cents(dec(r.total).sub(dec(r.amount_paid)).sub(dec(r.amount_credited)));
       const days = r.due_date ? diffDays(r.due_date, asOf) : 0;
       const kind = r.contract === "Equipment sale" ? "sale" : "rental";
       return { ...r, balance: balance.toFixed(2), days_past_due: Math.max(0, days), bucket: bucketFor(days), kind, href: `/${kind === "sale" ? "sales" : "invoices"}/${r.id}` };
@@ -87,6 +88,9 @@ export async function customerStatement(customerId: string, asOf = todayCentral(
      UNION ALL
      SELECT sp.paid_on, sp.amount, sp.method, sp.reference, s.sale_number FROM sale_payments sp JOIN equipment_sales s ON s.id=sp.sale_id
      WHERE s.customer_id=$1 AND sp.paid_on <= $2 AND sp.paid_on > ($2::date - interval '90 days')
+     UNION ALL
+     SELECT c.credit_date, c.total, 'Credit memo', c.credit_number, i.invoice_number FROM credit_memos c JOIN invoices i ON i.id=c.invoice_id
+     WHERE c.customer_id=$1 AND c.credit_date <= $2 AND c.credit_date > ($2::date - interval '90 days')
      ORDER BY 1 DESC`, [customerId, asOf]);
   return { asOf, company, customer, invoices, totals: asStrings(totals), payments };
 }
@@ -137,4 +141,62 @@ export async function rentalActivity(month: string, customerId?: string | null) 
     return { ...r, days_on_rent: daysInclusive(from, to) };
   });
   return { month: ms, rows: out, totals: { lines: out.length, billed_this_month: cents(billed).toFixed(2), unit_days: out.reduce((s, r) => s + r.days_on_rent, 0) } };
+}
+
+/**
+ * Fleet utilization for a month, per unit: days on rent (following exchanges, so each day counts for
+ * the machine actually on site), time utilization, and rental revenue billed on finalized invoices,
+ * split between units by the days each was on site. Sold and retired units are left out unless they
+ * were on rent that month.
+ */
+export async function utilization(month: string) {
+  const ms = monthStart(month), me = monthEnd(month);
+  const monthDays = daysInclusive(ms, me);
+  const units = await q(`SELECT e.id, e.unit_number, e.description, e.category, y.name AS yard_name,
+    CASE WHEN EXISTS (SELECT 1 FROM rental_contract_lines l WHERE l.equipment_id=e.id AND l.status IN ('active','off_rent')) THEN 'on_rent' ELSE e.status END AS status
+    FROM equipment e LEFT JOIN yards y ON y.id=e.yard_id ORDER BY e.unit_number`);
+  const stats = new Map<string, { days: number; revenue: Dec }>(units.map((u) => [String(u.id), { days: 0, revenue: new D(0) }]));
+  const lines = await q(`SELECT l.id FROM rental_contract_lines l WHERE l.on_rent_date <= $2 AND (l.off_rent_date IS NULL OR l.off_rent_date >= $1)`, [ms, me]);
+  for (const l of lines) {
+    const ctx = await loadLineContext(l.id);
+    const from = maxDate(ctx.line.on_rent_date, ms), to = minDate(ctx.line.off_rent_date ?? me, me);
+    if (from > to) continue;
+    for (const g of unitSegments(ctx, from, to)) {
+      const st = stats.get(String(g.equipment.id));
+      if (st) st.days += daysInclusive(g.from, g.to);
+    }
+  }
+  const invs = await q(`SELECT i.contract_line_id, i.period_start, i.period_end, sum(il.amount) AS rental
+                        FROM invoices i JOIN invoice_lines il ON il.invoice_id=i.id AND il.kind='rental'
+                        WHERE i.finalized_at IS NOT NULL AND i.status NOT IN ('voided','corrected') AND i.period_start <= $2 AND i.period_end >= $1
+                        GROUP BY i.id`, [ms, me]);
+  for (const inv of invs) {
+    const ctx = await loadLineContext(inv.contract_line_id);
+    const total = daysInclusive(inv.period_start, inv.period_end);
+    for (const g of unitSegments(ctx, inv.period_start, inv.period_end)) {
+      // Only the part of the invoice period that falls in this month.
+      const a = maxDate(g.from, ms), b = minDate(g.to, me);
+      if (a > b) continue;
+      const st = stats.get(String(g.equipment.id));
+      if (st) st.revenue = st.revenue.add(dec(inv.rental).mul(daysInclusive(a, b)).div(total));
+    }
+  }
+  const rows = units
+    .map((u) => { const st = stats.get(String(u.id))!; return { ...u, days_on_rent: st.days, time_pct: Math.round((st.days / monthDays) * 100), revenue: cents(st.revenue).toFixed(2) }; })
+    .filter((r) => r.days_on_rent > 0 || !["sold", "retired"].includes(r.status));
+  const unitDays = rows.length * monthDays;
+  const onRentDays = rows.reduce((s, r) => s + r.days_on_rent, 0);
+  const revenue = rows.reduce((s, r) => s.add(r.revenue), new D(0));
+  const byCategory = new Map<string, { units: number; days: number; revenue: Dec }>();
+  for (const r of rows) {
+    const k = r.category ?? "Uncategorized";
+    const c = byCategory.get(k) ?? { units: 0, days: 0, revenue: new D(0) };
+    c.units++; c.days += r.days_on_rent; c.revenue = c.revenue.add(r.revenue);
+    byCategory.set(k, c);
+  }
+  return {
+    month: ms, monthDays, rows,
+    categories: [...byCategory.entries()].map(([category, c]) => ({ category, units: c.units, time_pct: Math.round((c.days / (c.units * monthDays)) * 100), revenue: cents(c.revenue).toFixed(2) })).sort((a, b) => a.category.localeCompare(b.category)),
+    totals: { units: rows.length, time_pct: unitDays ? Math.round((onRentDays / unitDays) * 100) : 0, revenue: cents(revenue).toFixed(2), idle: rows.filter((r) => r.days_on_rent === 0).length },
+  };
 }

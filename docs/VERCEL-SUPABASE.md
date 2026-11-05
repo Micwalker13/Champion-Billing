@@ -82,6 +82,19 @@ To turn it on, go to GitHub → **Champion-Billing → Settings → Secrets and 
 
 Then open **Actions → Nightly database backup → Run workflow** to test it. A green check means a backup was made, restored into a scratch database, and every stored invoice PDF matched its fingerprint. The backup appears under that run's **Artifacts**. If you ever need one restored, ask Claude.
 
+## 7. Email invoices (optional): about 10 minutes
+The **Email to customer** buttons appear once these are added in Vercel (**Settings → Environment Variables**, Production), followed by a **Redeploy**:
+
+| Name | Value for Microsoft 365 |
+|---|---|
+| `SMTP_HOST` | `smtp.office365.com` |
+| `SMTP_PORT` | `587` |
+| `SMTP_USER` | the sending mailbox, e.g. billing@championequipmentco.com |
+| `SMTP_PASS` | that mailbox's password |
+| `INVOICE_FROM` | `Champion Equipment Billing <billing@championequipmentco.com>` |
+
+In the Microsoft 365 admin center, open that mailbox, choose **Mail → Manage email apps**, and tick **Authenticated SMTP**. Then put RPM's AP address on **Customers → RPM xConstruction → Where invoices are emailed**. Every email, sent or failed, is listed on the invoice.
+
 ## How changes reach the live site
 - Every merge to `main` deploys to production automatically.
 - If a change includes a database update, it's applied during that deploy. **Merging the pull request is your approval.** Each pull request description says plainly when it changes the database.

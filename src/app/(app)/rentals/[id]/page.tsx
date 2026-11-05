@@ -10,7 +10,7 @@ import { fmtUSD } from "@/lib/money";
 import { addMonths, fmtDate, monthLabel, monthStart, todayCentral } from "@/lib/dates";
 import { BILLING_METHOD_LABELS, RATE_BASIS_LABELS, lastBillableDay } from "@/lib/billing";
 import { Flash, RentalBadge, StatusBadge, Empty } from "@/components/ui";
-import { assignPoAction, changeLineStatusAction, exchangeUnitAction, generateInvoiceAction, removePoAction, updateTermsAction, uploadDocumentAction } from "../../../actions";
+import { damageWaiverAction, assignPoAction, changeLineStatusAction, exchangeUnitAction, generateInvoiceAction, removePoAction, updateTermsAction, uploadDocumentAction } from "../../../actions";
 import { availableUnits, exchangesForLine, listYards } from "@/lib/services/inventory";
 
 export default async function RentalPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<Record<string, string>> }) {
@@ -56,6 +56,13 @@ export default async function RentalPage({ params, searchParams }: { params: Pro
             <dt>Billing</dt><dd>{BILLING_METHOD_LABELS[ctx.method]}; billed here from {fmtDate(line.billing_start_date)}{last ? `; last billable day ${fmtDate(last)}` : ""}</dd>
             <dt>Delivery / pickup</dt><dd>{fmtUSD(line.delivery_charge)} / {fmtUSD(line.pickup_charge)}</dd>
             <dt>Other fees</dt><dd>{fees.length ? fees.map((f: any) => <div key={f.id}>{f.description}: {fmtUSD(f.amount)} ({f.frequency === "one_time" ? "one time" : "per period"})</div>) : "—"}</dd>
+            {profile.damage_waiver_pct && <><dt>Damage waiver</dt><dd>
+              {line.damage_waiver_waived ? "Waived on this rental" : `${(Number(profile.damage_waiver_pct) * 100).toString()}% of rental each period`}
+              {can(user, "edit_records") && (line.damage_waiver_waived
+                ? <form action={damageWaiverAction} className="inline" style={{ marginLeft: 8 }}><H><input type="hidden" name="waived" value="false" /><button className="btn-sm">Charge it again</button></H></form>
+                : <details><summary className="small">Waive for this rental</summary><form action={damageWaiverAction} className="row"><H><input type="hidden" name="waived" value="true" />
+                    <div className="field"><input name="reason" required minLength={5} placeholder="e.g. Customer's insurance certificate on file" /></div><button className="btn-sm">Waive</button></H></form></details>)}
+            </dd></>}
             <dt>Payment terms</dt><dd>{contract.payment_terms_days ? `Net ${contract.payment_terms_days}` : profile.payment_terms_label}</dd>
             <dt>Notes</dt><dd style={{ whiteSpace: "pre-line" }}>{contract.internal_notes ?? "—"}</dd>
           </dl>
