@@ -32,6 +32,12 @@ function sender(): { send: Sender; settings: MailSettings } {
 
 export function emailEnabled() { return !!testSender || !!mailSettings(); }
 
+/** Send a short message with no attachment (for example a portal sign-in link). */
+export async function sendPlainEmail(to: string, subject: string, text: string) {
+  const { send, settings } = sender();
+  return send({ from: settings.from, replyTo: settings.replyTo, to: [to], subject, text, attachments: [] });
+}
+
 const EMAIL = /^[^\s@,;<>]+@[^\s@,;<>]+\.[a-z]{2,}$/i;
 export function parseAddresses(list: string | null | undefined): string[] {
   const out = String(list ?? "").split(/[,;\s]+/).map((s) => s.trim()).filter(Boolean);

@@ -1,15 +1,17 @@
 import { requireUser } from "@/lib/session";
 import { ROLE_LABELS, can } from "@/lib/permissions";
 import { logoutAction } from "../actions";
+import { openPortalRequestCount } from "@/lib/services/portal";
 
 export const dynamic = "force-dynamic";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const user = await requireUser();
+  const openRequests = await openPortalRequestCount();
   const links: Array<[string, string, boolean?]> = [
     ["/", "Dashboard"], ["/rpm", "RPM billing"], ["/invoices", "Invoices"], ["/imports", "PO imports"], ["/reports", "Reports"], ["/sales", "Sales"],
     ["/rentals", "Rentals"], ["/customers", "Customers"], ["/equipment", "Equipment"], ["/shop", "Shop"], ["/dispatch", "Dispatch"], ["/quotes", "Quotes"], ["/reservations", "Reservations"], ["/fees", "Fees & taxes"], ["/exports", "Exports"], ["/audit", "Audit log"],
-    ["/quickbooks", "QuickBooks", can(user, "run_quickbooks_sync")], ["/settings", "Settings", can(user, "configure_billing")],
+    ["/portal-requests", openRequests ? `Customer requests (${openRequests})` : "Customer requests"], ["/quickbooks", "QuickBooks", can(user, "run_quickbooks_sync")], ["/settings", "Settings", can(user, "configure_billing")],
   ];
   const visible = links.filter(([, , show]) => show !== false);
   return (
