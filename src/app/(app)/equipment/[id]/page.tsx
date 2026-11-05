@@ -5,9 +5,10 @@ import { q } from "@/lib/db";
 import { fmtUSD } from "@/lib/money";
 import { fmtDate } from "@/lib/dates";
 import { RATE_BASIS_LABELS } from "@/lib/billing";
-import { Flash, RentalBadge, StatusBadge, UnitStatus, Empty } from "@/components/ui";
+import { DueBadge, Flash, RentalBadge, StatusBadge, UnitStatus, WoStatus, Empty } from "@/components/ui";
+import { WO_KIND_LABELS, listWorkOrders, serviceDue } from "@/lib/services/shop";
 import { EVENT_LABELS, UNIT_STATUS_LABELS, listYards, unitDetail } from "@/lib/services/inventory";
-import { createSaleAction, updateUnitAction } from "../../../actions";
+import { createIntervalAction, createSaleAction, createWorkOrderAction, intervalActiveAction, updateUnitAction } from "../../../actions";
 
 export default async function UnitPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<Record<string, string>> }) {
   const user = await requireUser();
@@ -17,7 +18,8 @@ export default async function UnitPage({ params, searchParams }: { params: Promi
   const d = await unitDetail(id);
   if (!d) notFound();
   const { unit, open, events, rentals, sale } = d;
-  const [yards, customers] = await Promise.all([listYards(), q(`SELECT id, name FROM customers WHERE active ORDER BY name`)]);
+  const [yards, customers, services, wos] = await Promise.all([listYards(), q(`SELECT id, name FROM customers WHERE active ORDER BY name`), serviceDue({ equipmentId: id }), listWorkOrders({ status: "all", unit: unit.unit_number })]);
+  const myWos = wos.filter((w: any) => String(w.equipment_id) === String(id));
   const where = open ? "on_rent" : unit.status;
   const back = `/equipment/${id}`;
   const canSell = can(user, "edit_records") && !open && !sale && unit.status !== "sold";
@@ -86,6 +88,48 @@ export default async function UnitPage({ params, searchParams }: { params: Promi
         </details>)}
 
       <div className="card">
+        <h2>Service and shop</h2>
+        <div className="table-wrap"><table>
+          <thead><tr><th>Service</th><th>Every</th><th>Last done</th><th>Next due</th><th>Status</th>{can(user, "edit_records") && <th />}</tr></thead>
+          <tbody>{services.map((s: any) => <tr key={s.id}><td>{s.name}</td>
+            <td>{[s.every_hours ? `${Number(s.every_hours)} hrs` : null, s.every_days ? `${s.every_days} days` : null].filter(Boolean).join(" or ")}</td>
+            <td>{[s.last_done_hours != null ? `${s.last_done_hours} hrs` : null, s.last_done_on ? fmtDate(s.last_done_on) : null].filter(Boolean).join(", ") || "—"}</td>
+            <td>{[s.due_at_hours ? `${s.due_at_hours} hrs` : null, s.due_on ? fmtDate(s.due_on) : null].filter(Boolean).join(" or ") || "—"}</td>
+            <td><DueBadge status={s.status} />{s.open_wo && <> <a href={`/shop/${s.open_wo_id}`}>{s.open_wo}</a></>}</td>
+            {can(user, "edit_records") && <td><form action={intervalActiveAction} className="inline"><input type="hidden" name="back" value={back} /><input type="hidden" name="interval_id" value={s.id} /><input type="hidden" name="active" value="false" /><button className="btn-sm">Turn off</button></form></td>}</tr>)}</tbody>
+        </table>{!services.length && <Empty>No service schedules for this unit.</Empty>}</div>
+        {can(user, "edit_records") && unit.status !== "sold" && (
+          <details style={{ marginTop: 10 }}><summary>Add a service schedule</summary>
+            <form action={createIntervalAction} className="row" style={{ marginTop: 6 }}>
+              <input type="hidden" name="equipment_id" value={id} /><input type="hidden" name="back" value={back} />
+              <div className="field" style={{ flexBasis: 200 }}><label>Service</label><input name="name" required placeholder="250-hour service" /></div>
+              <div className="field"><label>Every (hours)</label><input name="every_hours" inputMode="decimal" style={{ width: 90 }} /></div>
+              <div className="field"><label>Every (days)</label><input name="every_days" inputMode="numeric" style={{ width: 90 }} /></div>
+              <div className="field"><label>Last done at (hours)</label><input name="last_done_hours" inputMode="decimal" defaultValue={unit.hour_meter ?? ""} style={{ width: 110 }} /></div>
+              <div className="field"><label>Last done on</label><input type="date" name="last_done_on" /></div>
+              <button>Add</button>
+            </form></details>)}
+        <h3 style={{ marginTop: 14 }}>Work orders</h3>
+        <div className="table-wrap"><table>
+          <thead><tr><th>Work order</th><th>Type</th><th>Problem</th><th>Opened</th><th>Status</th><th className="num">Cost</th></tr></thead>
+          <tbody>{myWos.map((w: any) => <tr key={w.id}><td><a href={`/shop/${w.id}`}>{w.wo_number}</a></td><td>{WO_KIND_LABELS[w.kind]}</td><td className="small">{w.complaint}</td><td>{fmtDate(w.opened_on)}</td><td><WoStatus status={w.status} /></td><td className="num">{fmtUSD(w.total)}</td></tr>)}</tbody>
+        </table>{!myWos.length && <Empty>No work orders yet.</Empty>}</div>
+        {can(user, "edit_records") && !["sold", "retired"].includes(unit.status) && (
+          <details style={{ marginTop: 10 }}><summary>Open a work order</summary>
+            <form action={createWorkOrderAction} style={{ marginTop: 6 }}>
+              <input type="hidden" name="unit_number" value={unit.unit_number} /><input type="hidden" name="back" value={back} />
+              <div className="row">
+                <div className="field"><label>Type</label><select name="kind" defaultValue="repair">{Object.entries(WO_KIND_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></div>
+                <div className="field"><label>Hour meter</label><input name="hours_in" inputMode="decimal" defaultValue={unit.hour_meter ?? ""} /></div>
+                <div className="field"><label>Assigned to</label><input name="assigned_to" /></div>
+              </div>
+              <div className="field"><label>Problem or work to do</label><textarea name="complaint" rows={2} required minLength={3} /></div>
+              <label className="check"><input type="checkbox" name="put_in_shop" defaultChecked={!open} /> Mark the unit &ldquo;In shop&rdquo;</label>
+              <button className="btn-primary" style={{ marginTop: 8 }}>Open work order</button>
+            </form></details>)}
+      </div>
+
+      <div className="card">
         <h2>Rentals</h2>
         <div className="table-wrap"><table>
           <thead><tr><th>Rental</th><th>Customer</th><th>On rent</th><th>Off rent</th><th>Rate</th><th>Status</th></tr></thead>
@@ -98,7 +142,7 @@ export default async function UnitPage({ params, searchParams }: { params: Promi
         <div className="table-wrap"><table>
           <thead><tr><th>Date</th><th>What happened</th><th>Yard</th><th className="num">Hours</th><th>Details</th><th>By</th></tr></thead>
           <tbody>{events.map((ev: any) => <tr key={ev.id}><td className="nowrap">{fmtDate(ev.event_date)}</td><td>{EVENT_LABELS[ev.kind] ?? ev.kind}{ev.status ? <> → <UnitStatus status={ev.status} /></> : null}</td><td>{ev.yard_name ?? "—"}</td><td className="num">{ev.hours ?? "—"}</td>
-            <td className="small">{ev.note ?? ""}{ev.contract_line_id && <> <a href={`/rentals/${ev.contract_line_id}`}>{ev.contract_number}</a></>}{ev.sale_id && <> <a href={`/sales/${ev.sale_id}`}>sale</a></>}</td><td className="small">{ev.user_name ?? "—"}</td></tr>)}</tbody>
+            <td className="small">{ev.note ?? ""}{ev.contract_line_id && <> <a href={`/rentals/${ev.contract_line_id}`}>{ev.contract_number}</a></>}{ev.sale_id && <> <a href={`/sales/${ev.sale_id}`}>sale</a></>}{ev.work_order_id && <> <a href={`/shop/${ev.work_order_id}`}>work order</a></>}</td><td className="small">{ev.user_name ?? "—"}</td></tr>)}</tbody>
         </table>{!events.length && <Empty>No history recorded yet.</Empty>}</div>
       </div>
     </>
