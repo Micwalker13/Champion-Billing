@@ -3,7 +3,7 @@ import { ROLE_LABELS } from "@/lib/permissions";
 import { companySettings } from "@/lib/services/invoices";
 import { listUsers } from "@/lib/services/auth";
 import { Flash } from "@/components/ui";
-import { createUserAction, toggleUserAction, updateCompanyAction } from "../../actions";
+import { createUserAction, resetPasswordAction, toggleUserAction, updateCompanyAction } from "../../actions";
 
 export default async function Settings({ searchParams }: { searchParams: Promise<Record<string, string>> }) {
   const me = await requireUser("configure_billing");
@@ -36,7 +36,10 @@ export default async function Settings({ searchParams }: { searchParams: Promise
         <h2>Users</h2>
         <div className="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead><tbody>
           {users.map((u: any) => <tr key={u.id}><td>{u.name}</td><td>{u.email}</td><td>{ROLE_LABELS[u.role as keyof typeof ROLE_LABELS]}</td><td>{u.active ? <span className="badge b-ok">Active</span> : <span className="badge">Disabled</span>}</td>
-            <td>{String(u.id) !== String(me.id) && <form action={toggleUserAction} className="inline"><input type="hidden" name="id" value={u.id} /><input type="hidden" name="active" value={String(!u.active)} /><input type="hidden" name="back" value="/settings" /><button className="btn-sm">{u.active ? "Disable" : "Enable"}</button></form>}</td></tr>)}
+            <td>{String(u.id) !== String(me.id) && <form action={toggleUserAction} className="inline"><input type="hidden" name="id" value={u.id} /><input type="hidden" name="active" value={String(!u.active)} /><input type="hidden" name="back" value="/settings" /><button className="btn-sm">{u.active ? "Disable" : "Enable"}</button></form>}
+              <details><summary className="small">Reset password</summary>
+                <form action={resetPasswordAction} className="row"><input type="hidden" name="id" value={u.id} /><input type="hidden" name="back" value="/settings" />
+                  <div className="field"><input name="temporary_password" required minLength={12} autoComplete="off" placeholder="Temporary password (12+)" /></div><button className="btn-sm">Set</button></form></details></td></tr>)}
         </tbody></table></div>
         <form action={createUserAction} className="row" style={{ marginTop: 12 }}><input type="hidden" name="back" value="/settings" />
           <div className="field"><label>Name</label><input name="name" required /></div>
