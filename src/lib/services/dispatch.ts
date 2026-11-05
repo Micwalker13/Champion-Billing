@@ -296,7 +296,7 @@ export const RES_STATUS_LABELS: Record<string, string> = { reserved: "Reserved",
 /** Is the unit free for these dates: not on another reservation, not on an open rental that overlaps, not sold or retired? */
 async function assertUnitFree(db: Db, equipmentId: string, start: string, end: string | null, ignoreReservation?: string) {
   const e = await one(`SELECT unit_number, status FROM equipment WHERE id=$1`, [equipmentId], db);
-  if (["sold", "retired"].includes(e.status)) throw new AppError(`Unit ${e.unit_number} is ${e.status}.`);
+  if (["sold", "retired", "returned_to_vendor"].includes(e.status)) throw new AppError(`Unit ${e.unit_number} is ${e.status.replace(/_/g, " ")}.`);
   const res = await one(`SELECT r.id, cu.name FROM reservations r JOIN customers cu ON cu.id=r.customer_id WHERE r.equipment_id=$1 AND r.status='reserved' AND ($4::bigint IS NULL OR r.id<>$4)
                          AND daterange(r.start_date, COALESCE(r.end_date,'infinity'::date), '[]') && daterange($2::date, COALESCE($3::date,'infinity'::date), '[]')`,
     [equipmentId, start, end, ignoreReservation ?? null], db);

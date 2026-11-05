@@ -9,7 +9,7 @@ import { normalizeUnit } from "../po";
 import { fmtDate, isIsoDate, todayCentral } from "../dates";
 import { money } from "../money";
 
-export const UNIT_STATUS_LABELS: Record<string, string> = { on_rent: "On rent", available: "Available", in_shop: "In shop", sold: "Sold", retired: "Retired" };
+export const UNIT_STATUS_LABELS: Record<string, string> = { on_rent: "On rent", available: "Available", in_shop: "In shop", sold: "Sold", retired: "Retired", returned_to_vendor: "Returned to supplier" };
 export const EVENT_LABELS: Record<string, string> = {
   added: "Added to inventory", moved: "Moved yard", status: "Status changed", hours: "Hour meter", exchange_out: "Exchanged out",
   exchange_in: "Exchanged in", returned: "Returned from rent", sold: "Sold", sale_voided: "Sale voided", work_order: "Shop work order", service_done: "Service done",
@@ -79,6 +79,7 @@ export async function updateUnit(user: SessionUser, id: string, input: unknown) 
     const before = await one(`SELECT * FROM equipment WHERE id=$1 FOR UPDATE`, [id], db);
     if (!before) throw new AppError("Unit not found", "not_found");
     if (before.status === "sold") throw new AppError(`Unit ${before.unit_number} was sold. Void the sale first if it fell through.`);
+    if (before.status === "returned_to_vendor") throw new AppError(`Unit ${before.unit_number} was a re-rent and has gone back to the supplier.`);
     if (u.status !== before.status && (await openRentalFor(db, id))) throw new AppError(`Unit ${before.unit_number} is on rent. Return or exchange it before changing its status.`);
     const after = await one(
       `UPDATE equipment SET description=$2, category=$3, serial_number=$4, make=$5, model=$6, year=$7, yard_id=$8, status=$9, hour_meter=$10, asking_price=$11, notes=$12 WHERE id=$1 RETURNING *`,

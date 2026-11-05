@@ -8,6 +8,7 @@ import { RATE_BASIS_LABELS } from "@/lib/billing";
 import { DueBadge, Flash, RentalBadge, StatusBadge, UnitStatus, WoStatus, Empty } from "@/components/ui";
 import { WO_KIND_LABELS, listWorkOrders, serviceDue } from "@/lib/services/shop";
 import { EVENT_LABELS, UNIT_STATUS_LABELS, listYards, unitDetail } from "@/lib/services/inventory";
+import { reRentForUnit } from "@/lib/services/rerents";
 import { createIntervalAction, createSaleAction, createWorkOrderAction, equipmentClassAction, intervalActiveAction, unitFeeAction, updateUnitAction } from "../../../actions";
 import { equipmentClasses, loadFeeConfig, unitFeeSettings } from "@/lib/services/fees";
 import { FEE_CATEGORY_LABELS, feeReach, pctLabel, rateOn } from "@/lib/fees";
@@ -22,7 +23,7 @@ export default async function UnitPage({ params, searchParams }: { params: Promi
   if (!d) notFound();
   const { unit, open, events, rentals, sale } = d;
   const [yards, customers, services, wos] = await Promise.all([listYards(), q(`SELECT id, name FROM customers WHERE active ORDER BY name`), serviceDue({ equipmentId: id }), listWorkOrders({ status: "all", unit: unit.unit_number })]);
-  const [feeCfg, feeSettings, classes] = await Promise.all([loadFeeConfig(), unitFeeSettings(id), equipmentClasses()]);
+  const [feeCfg, feeSettings, classes, reRent] = await Promise.all([loadFeeConfig(), unitFeeSettings(id), equipmentClasses(), reRentForUnit(id)]);
   const feeAdmin = can(user, "manage_fees");
   const today = todayCentral();
   const VIA: Record<string, string> = { unit_on: "Switched on for this unit", unit_off: "Switched off for this unit", class: `From its class (${unit.equipment_class})`, category: `From its category (${unit.category})`, all: "Applies to all equipment", none: "Doesn't apply" };
@@ -45,6 +46,7 @@ export default async function UnitPage({ params, searchParams }: { params: Promi
             : sale ? <p>On sale <a href={`/sales/${sale.id}`}>{sale.sale_number ?? `draft #${sale.id}`}</a> to {sale.customer_name} ({fmtUSD(sale.total)}) <StatusBadge status={sale.status} /></p>
             : <p>{UNIT_STATUS_LABELS[unit.status]}{unit.yard_name ? ` at ${unit.yard_name}` : ""}.</p>}
           <dl className="kv">
+            {reRent && <><dt>Re-rent from</dt><dd><a href="/rerents">{reRent.vendor_name}</a>{reRent.vendor_agreement ? ` · agreement ${reRent.vendor_agreement}` : ""}{reRent.returned_date ? ` · returned ${fmtDate(reRent.returned_date)}` : ""}</dd></>}
             <dt>Category</dt><dd>{unit.category ?? "—"}</dd>
             <dt>Yard</dt><dd>{unit.yard_name ?? "—"}</dd>
             <dt>Hour meter</dt><dd>{unit.hour_meter ?? "—"}</dd>
@@ -150,7 +152,7 @@ export default async function UnitPage({ params, searchParams }: { params: Promi
           <thead><tr><th>Work order</th><th>Type</th><th>Problem</th><th>Opened</th><th>Status</th><th className="num">Cost</th></tr></thead>
           <tbody>{myWos.map((w: any) => <tr key={w.id}><td><a href={`/shop/${w.id}`}>{w.wo_number}</a></td><td>{WO_KIND_LABELS[w.kind]}</td><td className="small">{w.complaint}</td><td>{fmtDate(w.opened_on)}</td><td><WoStatus status={w.status} /></td><td className="num">{fmtUSD(w.total)}</td></tr>)}</tbody>
         </table>{!myWos.length && <Empty>No work orders yet.</Empty>}</div>
-        {can(user, "edit_records") && !["sold", "retired"].includes(unit.status) && (
+        {can(user, "edit_records") && !["sold", "retired", "returned_to_vendor"].includes(unit.status) && (
           <details style={{ marginTop: 10 }}><summary>Open a work order</summary>
             <form action={createWorkOrderAction} style={{ marginTop: 6 }}>
               <input type="hidden" name="unit_number" value={unit.unit_number} /><input type="hidden" name="back" value={back} />

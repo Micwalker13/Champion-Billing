@@ -48,7 +48,7 @@ export async function createWorkOrder(user: SessionUser, input: unknown) {
   return tx(async (db) => {
     const unit = await one(`SELECT * FROM equipment WHERE unit_number=$1 FOR UPDATE`, [w.unit_number], db);
     if (!unit) throw new AppError(`Unit ${w.unit_number} isn't in equipment.`);
-    if (["sold", "retired"].includes(unit.status)) throw new AppError(`Unit ${unit.unit_number} is ${unit.status}; it can't get a work order.`);
+    if (["sold", "retired", "returned_to_vendor"].includes(unit.status)) throw new AppError(`Unit ${unit.unit_number} is ${unit.status.replace(/_/g, " ")}; it can't get a work order.`);
     if (w.contract_line_id) {
       const ok = await one(`SELECT 1 FROM rental_contract_lines WHERE id=$1 AND (equipment_id=$2 OR id IN (SELECT contract_line_id FROM equipment_exchanges WHERE out_equipment_id=$2 OR in_equipment_id=$2))`, [w.contract_line_id, unit.id], db);
       if (!ok) throw new AppError("That rental isn't for this unit.");
@@ -282,7 +282,7 @@ export async function serviceDue(f: { equipmentId?: string; onlyDue?: boolean } 
                           (SELECT w.wo_number FROM work_orders w WHERE w.service_interval_id=si.id AND w.status NOT IN ('completed','cancelled') ORDER BY w.id DESC LIMIT 1) AS open_wo,
                           (SELECT w.id FROM work_orders w WHERE w.service_interval_id=si.id AND w.status NOT IN ('completed','cancelled') ORDER BY w.id DESC LIMIT 1) AS open_wo_id
                         FROM service_intervals si JOIN equipment e ON e.id=si.equipment_id
-                        WHERE si.active AND e.status NOT IN ('sold','retired') ${f.equipmentId ? "AND si.equipment_id=$1" : ""}
+                        WHERE si.active AND e.status NOT IN ('sold','retired','returned_to_vendor') ${f.equipmentId ? "AND si.equipment_id=$1" : ""}
                         ORDER BY e.unit_number, si.name`, f.equipmentId ? [f.equipmentId] : [], db);
   const out = [];
   for (const r of rows) {

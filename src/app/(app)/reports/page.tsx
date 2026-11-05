@@ -5,11 +5,12 @@ import { fmtUSD } from "@/lib/money";
 import { fmtDate, isIsoDate, monthLabel, monthStart, todayCentral } from "@/lib/dates";
 import { Kpi, RentalBadge, StatusBadge, UnitStatus, Empty } from "@/components/ui";
 import { AGING_BUCKETS, BUCKET_LABELS, agingReport, rentalActivity, utilization } from "@/lib/services/reports";
+import { fleetProfitability } from "@/lib/services/profitability";
 
 export default async function Reports({ searchParams }: { searchParams: Promise<Record<string, string>> }) {
   const user = await requireUser();
   const sp = await searchParams;
-  const tab = sp.tab === "activity" ? "activity" : sp.tab === "utilization" ? "utilization" : "aging";
+  const tab = sp.tab === "activity" ? "activity" : sp.tab === "utilization" ? "utilization" : sp.tab === "profit" ? "profit" : "aging";
   const asOf = isIsoDate(sp.asOf ?? "") ? sp.asOf : todayCentral();
   const month = /^\d{4}-\d{2}$/.test(sp.month ?? "") ? `${sp.month}-01` : monthStart(todayCentral());
   const customers = await q(`SELECT id, name FROM customers WHERE active ORDER BY name`);
@@ -22,9 +23,10 @@ export default async function Reports({ searchParams }: { searchParams: Promise<
           <a className={`btn ${tab === "aging" ? "btn-primary" : ""}`} href="/reports?tab=aging">Money owed (aging)</a>
           <a className={`btn ${tab === "activity" ? "btn-primary" : ""}`} href="/reports?tab=activity">Rental activity</a>
           <a className={`btn ${tab === "utilization" ? "btn-primary" : ""}`} href="/reports?tab=utilization">Utilization</a>
+          <a className={`btn ${tab === "profit" ? "btn-primary" : ""}`} href="/reports?tab=profit">Fleet profitability</a>
         </div>
       </div>
-      {tab === "aging" ? <Aging asOf={asOf} showInvoices={sp.customer} canExport={canExport} /> : tab === "utilization" ? <Utilization month={month} /> : <Activity month={month} customerId={sp.customer} customers={customers} canExport={canExport} />}
+      {tab === "profit" ? <Profit from={isIsoDate(sp.from ?? "") ? sp.from : `${todayCentral().slice(0, 4)}-01-01`} to={isIsoDate(sp.to ?? "") ? sp.to : todayCentral()} /> : tab === "aging" ? <Aging asOf={asOf} showInvoices={sp.customer} canExport={canExport} /> : tab === "utilization" ? <Utilization month={month} /> : <Activity month={month} customerId={sp.customer} customers={customers} canExport={canExport} />}
     </>
   );
 }
@@ -157,6 +159,38 @@ async function Utilization({ month }: { month: string }) {
             <td className="num">{u.days_on_rent}</td><td><div className="row" style={{ gap: 8, alignItems: "center", flexWrap: "nowrap" }}>{bar(u.time_pct)}<span>{u.time_pct}%</span></div></td><td className="num">{fmtUSD(u.revenue)}</td></tr>)}</tbody>
         </table></div> : <Empty>No units yet.</Empty>}
       </div>
+    </>
+  );
+}
+
+async function Profit({ from, to }: { from: string; to: string }) {
+  const r = await fleetProfitability(from, to);
+  const cls = (v: string) => (Number(v) < 0 ? "num text-bad" : "num");
+  const pct = (m: number | null) => (m == null ? "—" : `${m}%`);
+  return (
+    <>
+      <form className="row card" method="get" style={{ alignItems: "flex-end" }}>
+        <input type="hidden" name="tab" value="profit" />
+        <div className="field"><label htmlFor="from">Billing periods from</label><input id="from" type="date" name="from" defaultValue={from} /></div>
+        <div className="field"><label htmlFor="to">to</label><input id="to" type="date" name="to" defaultValue={to} /></div>
+        <button>Show</button>
+      </form>
+      <div className="kpis">
+        <Kpi label="Rental revenue" value={fmtUSD(r.totals.revenue)} sub={`less ${fmtUSD(r.totals.credits)} credits`} />
+        <Kpi label="Shop cost" value={fmtUSD(r.totals.shop_cost)} />
+        <Kpi label="Re-rent cost" value={fmtUSD(r.totals.re_rent_cost)} />
+        <Kpi label="Profit" value={fmtUSD(r.totals.profit)} sub={`margin ${pct(r.totals.margin)}`} tone={Number(r.totals.profit) < 0 ? "bad" : "ok"} />
+      </div>
+      <div className="card"><h2>By class</h2><div className="table-wrap"><table>
+        <thead><tr><th>Class</th><th className="num">Units</th><th className="num">Revenue</th><th className="num">Credits</th><th className="num">Shop</th><th className="num">Re-rent</th><th className="num">Profit</th><th className="num">Margin</th></tr></thead>
+        <tbody>{r.classes.map((c) => <tr key={c.category}><td>{c.category}</td><td className="num">{c.units}</td><td className="num">{fmtUSD(c.revenue)}</td><td className="num">{fmtUSD(c.credits)}</td><td className="num">{fmtUSD(c.shop_cost)}</td><td className="num">{fmtUSD(c.re_rent_cost)}</td><td className={cls(c.profit)}>{fmtUSD(c.profit)}</td><td className="num">{pct(c.margin)}</td></tr>)}</tbody>
+      </table></div></div>
+      <div className="card"><h2>By unit</h2><div className="table-wrap"><table>
+        <thead><tr><th>Unit</th><th>Class</th><th className="num">Revenue</th><th className="num">Credits</th><th className="num">Shop</th><th className="num">Re-rent</th><th className="num">Profit</th><th className="num">Margin</th></tr></thead>
+        <tbody>{r.units.map((u) => <tr key={u.equipment_id}><td><a className="mono" href={`/equipment/${u.equipment_id}`}>{u.unit_number}</a>{u.ownership === "re_rent" && <span className="badge" style={{ marginLeft: 6 }}>Re-rent</span>}<div className="small muted">{u.description}</div></td><td>{u.category ?? "—"}</td>
+          <td className="num">{fmtUSD(u.revenue)}</td><td className="num">{fmtUSD(u.credits)}</td><td className="num">{fmtUSD(u.shop_cost)}</td><td className="num">{fmtUSD(u.re_rent_cost)}</td><td className={cls(u.profit)}>{fmtUSD(u.profit)}</td><td className="num">{pct(u.margin)}</td></tr>)}</tbody>
+      </table>{!r.units.length && <Empty>Nothing in this range.</Empty>}</div></div>
+      <p className="small muted">Revenue is finalized invoice lines for billing periods starting in the range, before sales tax, without regulatory taxes like HET and TERP (those are passed through). Shop cost is parts, labor and outside repair on work orders opened in the range. Re-rent cost is the supplier bills entered on Re-rents. Depreciation, insurance and fuel you buy aren&rsquo;t included.</p>
     </>
   );
 }

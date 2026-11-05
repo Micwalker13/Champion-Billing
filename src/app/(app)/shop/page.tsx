@@ -15,7 +15,7 @@ export default async function Shop({ searchParams }: { searchParams: Promise<Rec
     listWorkOrders({ status: view, unit: sp.unit }),
     listWorkOrders({ status: "open" }),
     serviceDue({ onlyDue: true }),
-    q(`SELECT unit_number, description FROM equipment WHERE status NOT IN ('sold','retired') ORDER BY unit_number`),
+    q(`SELECT unit_number, description FROM equipment WHERE status NOT IN ('sold','retired','returned_to_vendor') ORDER BY unit_number`),
   ]);
   const overdue = due.filter((d: any) => d.status === "overdue").length;
   return (
