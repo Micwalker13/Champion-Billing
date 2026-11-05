@@ -8,7 +8,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const user = await requireUser();
   const links: Array<[string, string, boolean?]> = [
     ["/", "Dashboard"], ["/rpm", "RPM billing"], ["/invoices", "Invoices"], ["/imports", "PO imports"], ["/reports", "Reports"], ["/sales", "Sales"],
-    ["/rentals", "Rentals"], ["/customers", "Customers"], ["/equipment", "Equipment"], ["/shop", "Shop"], ["/dispatch", "Dispatch"], ["/quotes", "Quotes"], ["/reservations", "Reservations"], ["/fees", "Fees & taxes"], ["/exports", "Exports"], ["/audit", "Audit log"],
+    ["/rentals", "Rentals"], ["/customers", "Customers"], ["/equipment", "Equipment"], ["/shop", "Shop"], ["/dispatch", "Dispatch"], ["/quotes", "Quotes"], ["/reservations", "Reservations"], ["/availability", "Availability"], ["/fees", "Fees & taxes"], ["/exports", "Exports"], ["/audit", "Audit log"],
     ["/quickbooks", "QuickBooks", can(user, "run_quickbooks_sync")], ["/settings", "Settings", can(user, "configure_billing")],
   ];
   const visible = links.filter(([, , show]) => show !== false);
