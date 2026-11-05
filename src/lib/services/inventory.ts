@@ -12,7 +12,7 @@ import { money } from "../money";
 export const UNIT_STATUS_LABELS: Record<string, string> = { on_rent: "On rent", available: "Available", in_shop: "In shop", sold: "Sold", retired: "Retired" };
 export const EVENT_LABELS: Record<string, string> = {
   added: "Added to inventory", moved: "Moved yard", status: "Status changed", hours: "Hour meter", exchange_out: "Exchanged out",
-  exchange_in: "Exchanged in", returned: "Returned from rent", sold: "Sold", sale_voided: "Sale voided",
+  exchange_in: "Exchanged in", returned: "Returned from rent", sold: "Sold", sale_voided: "Sale voided", work_order: "Shop work order", service_done: "Service done",
 };
 
 const optText = z.string().trim().max(2000).optional().nullable().transform((v) => (v ? v : null));
@@ -20,10 +20,10 @@ const optId = z.union([z.coerce.string().regex(/^\d+$/), z.literal("")]).optiona
 const optHours = z.union([z.literal(""), z.coerce.number().min(0).max(999999)]).optional().nullable().transform((v) => (v === "" || v == null ? null : v));
 const optMoney = z.union([z.string().trim().regex(/^\d+(\.\d{1,2})?$/, "Enter an amount like 450.00"), z.literal("")]).optional().nullable().transform((v) => (v ? v : null));
 
-export async function logEvent(db: Db, e: { equipmentId: string; kind: string; date?: string; yardId?: string | null; status?: string | null; hours?: number | string | null; note?: string | null; lineId?: string | null; exchangeId?: string | null; saleId?: string | null; userId: string | null }) {
+export async function logEvent(db: Db, e: { equipmentId: string; kind: string; date?: string; yardId?: string | null; status?: string | null; hours?: number | string | null; note?: string | null; lineId?: string | null; exchangeId?: string | null; saleId?: string | null; workOrderId?: string | null; userId: string | null }) {
   await db.query(
-    `INSERT INTO equipment_events(equipment_id,kind,event_date,yard_id,status,hours,note,contract_line_id,exchange_id,sale_id,user_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-    [e.equipmentId, e.kind, e.date ?? todayCentral(), e.yardId ?? null, e.status ?? null, e.hours ?? null, e.note ?? null, e.lineId ?? null, e.exchangeId ?? null, e.saleId ?? null, e.userId]);
+    `INSERT INTO equipment_events(equipment_id,kind,event_date,yard_id,status,hours,note,contract_line_id,exchange_id,sale_id,work_order_id,user_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+    [e.equipmentId, e.kind, e.date ?? todayCentral(), e.yardId ?? null, e.status ?? null, e.hours ?? null, e.note ?? null, e.lineId ?? null, e.exchangeId ?? null, e.saleId ?? null, e.workOrderId ?? null, e.userId]);
 }
 
 /** The open rental a unit is on, if any. */

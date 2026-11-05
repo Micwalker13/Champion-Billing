@@ -19,6 +19,7 @@ import { createSale, finalizeSale, recordSalePayment, voidSale } from "@/lib/ser
 import { issueCredit } from "@/lib/services/credits";
 import { emailCredit, emailInvoice, emailMonth, setInvoiceEmails } from "@/lib/services/email";
 import { saveUsage, setDamageWaiverWaived, updateUsageSettings } from "@/lib/services/usage";
+import { addWorkOrderLine, cancelWorkOrder, completeWorkOrder, createServiceInterval, createWorkOrder, linkWorkOrderRental, removeWorkOrderLine, setIntervalActive, updateWorkOrder } from "@/lib/services/shop";
 import { fmtDate } from "@/lib/dates";
 
 const str = (fd: FormData, k: string) => { const v = fd.get(k); return typeof v === "string" ? v : ""; };
@@ -393,4 +394,44 @@ export async function changePasswordAction(fd: FormData) {
 }
 export async function resetPasswordAction(fd: FormData) {
   await run(fd, "/settings", async (u) => { await resetUserPassword(u, str(fd, "id"), str(fd, "temporary_password")); return "Temporary password set. Give it to them privately and ask them to change it under My account."; });
+}
+
+// ───────── Shop
+const woBack = (fd: FormData) => `/shop/${str(fd, "wo_id")}`;
+export async function createWorkOrderAction(fd: FormData) {
+  await run(fd, "/shop", async (u) => {
+    const wo = await createWorkOrder(u, { unit_number: str(fd, "unit_number"), kind: str(fd, "kind") || "repair", complaint: str(fd, "complaint"), opened_on: str(fd, "opened_on") || undefined,
+      hours_in: str(fd, "hours_in"), assigned_to: str(fd, "assigned_to"), contract_line_id: str(fd, "contract_line_id"), service_interval_id: str(fd, "service_interval_id"), put_in_shop: bool(fd, "put_in_shop") });
+    return { to: `/shop/${wo.id}`, msg: `Work order ${wo.wo_number} opened.` };
+  });
+}
+export async function updateWorkOrderAction(fd: FormData) {
+  await run(fd, woBack(fd), async (u) => { await updateWorkOrder(u, str(fd, "wo_id"), { status: str(fd, "status"), cause: str(fd, "cause"), correction: str(fd, "correction"), assigned_to: str(fd, "assigned_to") }); return "Work order saved."; });
+}
+export async function addWorkOrderLineAction(fd: FormData) {
+  await run(fd, woBack(fd), async (u) => { await addWorkOrderLine(u, str(fd, "wo_id"), { kind: str(fd, "kind"), description: str(fd, "description"), part_number: str(fd, "part_number"), quantity: str(fd, "quantity"), unit_cost: str(fd, "unit_cost") }); return "Line added."; });
+}
+export async function removeWorkOrderLineAction(fd: FormData) {
+  await run(fd, woBack(fd), async (u) => { await removeWorkOrderLine(u, str(fd, "wo_id"), str(fd, "line_id")); return "Line removed."; });
+}
+export async function linkWorkOrderRentalAction(fd: FormData) {
+  await run(fd, woBack(fd), async (u) => { await linkWorkOrderRental(u, str(fd, "wo_id"), str(fd, "contract_line_id") || null); return "Rental link saved."; });
+}
+export async function completeWorkOrderAction(fd: FormData) {
+  await run(fd, woBack(fd), async (u) => {
+    const r = await completeWorkOrder(u, str(fd, "wo_id"), { completed_on: str(fd, "completed_on"), correction: str(fd, "correction"), hours_out: str(fd, "hours_out"), return_to: str(fd, "return_to") || "available", bill_customer: bool(fd, "bill_customer") });
+    return r.billed_fee_id ? "Work order completed. The repair is billed to the rental as a one-time charge on its next invoice." : "Work order completed.";
+  });
+}
+export async function cancelWorkOrderAction(fd: FormData) {
+  await run(fd, woBack(fd), async (u) => { await cancelWorkOrder(u, str(fd, "wo_id"), str(fd, "reason")); return "Work order cancelled."; });
+}
+export async function createIntervalAction(fd: FormData) {
+  await run(fd, "/shop", async (u) => {
+    await createServiceInterval(u, str(fd, "equipment_id"), { name: str(fd, "name"), every_hours: str(fd, "every_hours"), every_days: str(fd, "every_days"), last_done_hours: str(fd, "last_done_hours"), last_done_on: str(fd, "last_done_on") });
+    return "Service schedule added.";
+  });
+}
+export async function intervalActiveAction(fd: FormData) {
+  await run(fd, "/shop", async (u) => { const on = str(fd, "active") === "true"; await setIntervalActive(u, str(fd, "interval_id"), on); return on ? "Service schedule turned back on." : "Service schedule turned off."; });
 }

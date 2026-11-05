@@ -34,3 +34,14 @@ const UNIT_CLASS: Record<string, string> = { on_rent: "b-accent", available: "b-
 export function UnitStatus({ status }: { status: string }) {
   return <span className={`badge ${UNIT_CLASS[status] ?? ""}`}>{UNIT_STATUS_LABELS[status] ?? status}</span>;
 }
+
+const WO_CLASS: Record<string, string> = { open: "b-info", in_progress: "b-accent", waiting_parts: "b-warn", completed: "b-ok", cancelled: "" };
+const WO_LABELS: Record<string, string> = { open: "Open", in_progress: "In progress", waiting_parts: "Waiting on parts", completed: "Completed", cancelled: "Cancelled" };
+export function WoStatus({ status }: { status: string }) {
+  return <span className={`badge ${WO_CLASS[status] ?? ""}`}>{WO_LABELS[status] ?? status}</span>;
+}
+const DUE_CLASS: Record<string, string> = { overdue: "b-bad", due_soon: "b-warn", ok: "b-ok", unknown: "" };
+const DUE_TEXT: Record<string, string> = { overdue: "Overdue", due_soon: "Due soon", ok: "OK", unknown: "Needs last-done reading" };
+export function DueBadge({ status }: { status: string }) {
+  return <span className={`badge ${DUE_CLASS[status] ?? ""}`}>{DUE_TEXT[status] ?? status}</span>;
+}
