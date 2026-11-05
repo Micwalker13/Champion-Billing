@@ -6,7 +6,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { AppError, Db, audit, one, pool, q, tx } from "../db";
-import { SessionUser, requirePerm } from "../permissions";
+import { SessionUser, can, requirePerm } from "../permissions";
 import { addDays, isIsoDate, todayCentral } from "../dates";
 import { dec } from "../money";
 import { normalizeUnit } from "../po";
@@ -14,6 +14,7 @@ import { renderQuotePdf, renderTicketPdf } from "../pdf";
 import { logEvent } from "./inventory";
 import { createRentalInTx, rentalSchema } from "./records";
 import { feesFor, loadFeeConfig } from "./fees";
+import { freeForCategory } from "./availability";
 
 const optText = z.string().trim().max(2000).optional().nullable().transform((v) => (v ? v : null));
 const optHours = z.union([z.literal(""), z.string().trim().regex(/^\d{1,7}(\.\d)?$/, "Enter hours like 1234.5")]).optional().nullable().transform((v) => (v ? v : null));
@@ -44,7 +45,11 @@ export const ticketSchema = z.object({
 export async function scheduleTicket(user: SessionUser, lineId: string, input: unknown) {
   requirePerm(user, "edit_records");
   const t = ticketSchema.parse(input);
-  return tx(async (db) => {
+  return tx((db) => scheduleTicketInTx(db, user, lineId, t));
+}
+
+async function scheduleTicketInTx(db: Db, user: SessionUser, lineId: string, t: z.infer<typeof ticketSchema>) {
+  {
     const line = await one(`SELECT l.*, j.address AS site_address FROM rental_contract_lines l JOIN rental_contracts c ON c.id=l.contract_id LEFT JOIN jobsites j ON j.id=c.jobsite_id WHERE l.id=$1`, [lineId], db);
     if (!line) throw new AppError("Rental not found", "not_found");
     if (["closed"].includes(line.status)) throw new AppError("This rental is closed.");
@@ -58,7 +63,7 @@ export async function scheduleTicket(user: SessionUser, lineId: string, input: u
       [`${t.kind === "delivery" ? "DL" : "PU"}-${n}`, t.kind, lineId, line.equipment_id, t.scheduled_date, t.time_window, t.driver, t.truck, line.site_address, t.site_contact, t.instructions, user.id], db);
     await audit(db, user.id, "create", "delivery_ticket", row.id, null, { ...row, signature_png: undefined, pdf: undefined });
     return row;
-  });
+  }
 }
 
 /** Decode a signature drawn on screen (a PNG data URL) and check it is a real, reasonably sized PNG. */
@@ -325,6 +330,7 @@ export const reservationSchema = z.object({
   rate_amount: z.union([z.literal(""), moneyStr]).optional().nullable().transform((v) => (v ? v : null)),
   rate_basis: z.union([z.literal(""), z.enum(["daily", "weekly", "cycle_28", "cycle_30", "monthly"])]).optional().nullable().transform((v) => (v ? v : null)),
   notes: optText,
+  overbook: z.boolean().optional(),
 });
 export async function createReservation(user: SessionUser, input: unknown) {
   requirePerm(user, "edit_records");
@@ -332,12 +338,27 @@ export async function createReservation(user: SessionUser, input: unknown) {
   if (r.end_date && r.end_date < r.start_date) throw new AppError("The end date is before the start date.");
   return tx(async (db) => {
     let equipmentId: string | null = null;
+    let category = r.category;
     if (r.unit_number) {
-      const e = await one(`SELECT id FROM equipment WHERE unit_number=$1`, [r.unit_number], db);
+      const e = await one(`SELECT id, category FROM equipment WHERE unit_number=$1`, [r.unit_number], db);
       if (!e) throw new AppError(`Unit ${r.unit_number} isn't in equipment.`);
       equipmentId = e.id;
+      category = category ?? e.category ?? null;
+    } else if (category) {
+      // Holding a class without a unit: make sure one is free every day, one booking at a time.
+      await db.query(`SELECT pg_advisory_xact_lock(hashtext('reserve-category:' || lower(btrim($1))))`, [category]);
+      const f = await freeForCategory(category, r.start_date, r.end_date, {}, db);
+      if (f.minFree <= 0) {
+        const why = f.fleet === 0 ? `There are no ${category} units in the fleet.` : `No ${category} is free on ${f.shortDay} (${f.fleet} in the fleet).`;
+        if (!r.overbook) throw new AppError(`${why} Check Availability, pick another class, or tick "Reserve anyway" to wait-list it.`);
+        if (!can(user, "override_validation")) throw new AppError(`${why} Only a billing manager can reserve beyond what's free.`);
+      }
+    } else {
+      throw new AppError("Pick the equipment class (or a specific unit) so the reservation holds a machine.");
     }
-    return reserveInTx(db, user, { ...r, equipment_id: equipmentId });
+    const row = await reserveInTx(db, user, { ...r, category, equipment_id: equipmentId });
+    if (r.overbook && !equipmentId) await audit(db, user.id, "overbook", "reservation", row.id, null, { category }, "Reserved beyond the units free for these dates");
+    return row;
   });
 }
 
@@ -369,9 +390,40 @@ export async function cancelReservation(user: SessionUser, id: string, reason: s
  * The machine is going out: create the rental from the reservation. The rental agreement number
  * comes from Quipli (this app never creates or changes Quipli agreements).
  */
-export async function convertReservation(user: SessionUser, id: string, input: { contract_number: string; start_date?: string; jobsite_address?: string | null; delivery_charge?: string; pickup_charge?: string }) {
+type ConvertInput = { contract_number: string; start_date?: string; jobsite_address?: string | null; delivery_charge?: string; pickup_charge?: string };
+export async function convertReservation(user: SessionUser, id: string, input: ConvertInput) {
   requirePerm(user, "edit_records");
+  return tx((db) => convertInTx(db, user, id, input));
+}
+
+/**
+ * Dispatch a reservation in one step: pick the unit (if it doesn't have one yet), put it on rent
+ * with the Quipli agreement number, and optionally schedule the delivery ticket. All or nothing.
+ */
+export async function sendOutReservation(user: SessionUser, id: string, input: ConvertInput & { unit_number?: string | null; delivery?: { scheduled_date: string; time_window?: string | null; driver?: string | null; truck?: string | null } | null }) {
+  requirePerm(user, "edit_records");
+  const delivery = input.delivery ? ticketSchema.parse({ kind: "delivery", ...input.delivery }) : null;
   return tx(async (db) => {
+    const r = await one(`SELECT * FROM reservations WHERE id=$1 FOR UPDATE`, [id], db);
+    if (!r || r.status !== "reserved") throw new AppError("Only an open reservation can go out.");
+    const unit = input.unit_number ? normalizeUnit(input.unit_number) : null;
+    if (unit) {
+      const e = await one(`SELECT id FROM equipment WHERE unit_number=$1`, [unit], db);
+      if (!e) throw new AppError(`Unit ${unit} isn't in equipment.`);
+      if (String(e.id) !== String(r.equipment_id)) {
+        await assertUnitFree(db, e.id, input.start_date || r.start_date, r.end_date, id);
+        await db.query(`UPDATE reservations SET equipment_id=$2 WHERE id=$1`, [id, e.id]);
+        await audit(db, user.id, "assign_unit", "reservation", id, { equipment_id: r.equipment_id }, { equipment_id: e.id });
+      }
+    } else if (!r.equipment_id) throw new AppError("Pick the unit that's going out.");
+    const { lineId } = await convertInTx(db, user, id, input);
+    const ticket = delivery ? await scheduleTicketInTx(db, user, lineId, delivery) : null;
+    return { lineId, ticket };
+  });
+}
+
+async function convertInTx(db: Db, user: SessionUser, id: string, input: ConvertInput) {
+  {
     const r = await one(`SELECT r.*, e.unit_number, ql.delivery_charge AS q_delivery, ql.pickup_charge AS q_pickup, qt.jobsite AS q_jobsite
                          FROM reservations r LEFT JOIN equipment e ON e.id=r.equipment_id LEFT JOIN quote_lines ql ON ql.id=r.quote_line_id LEFT JOIN quotes qt ON qt.id=ql.quote_id
                          WHERE r.id=$1 FOR UPDATE OF r`, [id], db);
@@ -389,7 +441,7 @@ export async function convertReservation(user: SessionUser, id: string, input: {
     await db.query(`UPDATE reservations SET status='converted', contract_line_id=$2 WHERE id=$1`, [id, lineId]);
     await audit(db, user.id, "convert", "reservation", id, { status: "reserved" }, { status: "converted", contract_line_id: lineId });
     return { lineId };
-  });
+  }
 }
 
 export async function listReservations(f: { status?: string } = {}, db: Db = pool()) {

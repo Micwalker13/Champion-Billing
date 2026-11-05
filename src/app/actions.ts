@@ -24,7 +24,7 @@ import { removeCoi, setRdwChoice, uploadCoi } from "@/lib/services/insurance";
 import { addExemption, addFeeAssignment, addFeeRate, createFeeType, endFeeRate, removeExemption, removeFeeAssignment, removeFeeOverride, setEquipmentClass, setFeeOverride, setFeeTypeActive, setUnitFee, updateFeeType } from "@/lib/services/fees";
 import { refreshSaleFees } from "@/lib/services/sales";
 import { tx } from "@/lib/db";
-import { acceptQuote, addQuoteLine, assignReservationUnit, cancelReservation, cancelTicket, completeTicket, convertReservation, createQuote, createReservation, declineQuote, markQuoteSent, removeQuoteLine, scheduleTicket } from "@/lib/services/dispatch";
+import { acceptQuote, addQuoteLine, assignReservationUnit, cancelReservation, cancelTicket, completeTicket, convertReservation, createQuote, createReservation, sendOutReservation, declineQuote, markQuoteSent, removeQuoteLine, scheduleTicket } from "@/lib/services/dispatch";
 import { addWorkOrderLine, cancelWorkOrder, completeWorkOrder, createServiceInterval, createWorkOrder, linkWorkOrderRental, removeWorkOrderLine, setIntervalActive, updateWorkOrder } from "@/lib/services/shop";
 import { fmtDate } from "@/lib/dates";
 import { disconnectQbo, kickQboSync, retryQboJob, runQboSyncNow, setQboMapping, updateQboSettings } from "@/lib/services/quickbooks";
@@ -492,8 +492,8 @@ export async function declineQuoteAction(fd: FormData) {
 export async function createReservationAction(fd: FormData) {
   await run(fd, "/reservations", async (u) => {
     await createReservation(u, { customer_id: str(fd, "customer_id"), unit_number: str(fd, "unit_number"), category: str(fd, "category"), description: str(fd, "description"),
-      start_date: str(fd, "start_date"), end_date: str(fd, "end_date"), rate_amount: str(fd, "rate_amount"), rate_basis: str(fd, "rate_basis"), notes: str(fd, "notes") });
-    return "Reserved.";
+      start_date: str(fd, "start_date"), end_date: str(fd, "end_date"), rate_amount: str(fd, "rate_amount"), rate_basis: str(fd, "rate_basis"), notes: str(fd, "notes"), overbook: bool(fd, "overbook") });
+    return bool(fd, "overbook") ? "Reserved beyond what's free (wait-listed). It shows as overbooked on Availability." : "Reserved.";
   });
 }
 export async function assignReservationAction(fd: FormData) {
@@ -501,6 +501,16 @@ export async function assignReservationAction(fd: FormData) {
 }
 export async function cancelReservationAction(fd: FormData) {
   await run(fd, "/reservations", async (u) => { await cancelReservation(u, str(fd, "reservation_id"), str(fd, "reason")); return "Reservation cancelled."; });
+}
+export async function sendOutReservationAction(fd: FormData) {
+  await run(fd, "/reservations", async (u) => {
+    const deliver = bool(fd, "schedule_delivery");
+    const r = await sendOutReservation(u, str(fd, "reservation_id"), {
+      unit_number: str(fd, "unit_number") || null, contract_number: str(fd, "contract_number"), start_date: str(fd, "start_date") || undefined,
+      delivery: deliver ? { scheduled_date: str(fd, "delivery_date") || str(fd, "start_date"), time_window: str(fd, "time_window"), driver: str(fd, "driver") } : null,
+    });
+    return { to: `/rentals/${r.lineId}`, msg: r.ticket ? `On rent, and delivery ${r.ticket.ticket_number} is scheduled.` : "On rent. Schedule the delivery below when you're ready." };
+  });
 }
 export async function convertReservationAction(fd: FormData) {
   await run(fd, "/reservations", async (u) => {
