@@ -27,6 +27,7 @@ import { tx } from "@/lib/db";
 import { acceptQuote, addQuoteLine, assignReservationUnit, cancelReservation, cancelTicket, completeTicket, convertReservation, createQuote, createReservation, declineQuote, markQuoteSent, removeQuoteLine, scheduleTicket } from "@/lib/services/dispatch";
 import { addWorkOrderLine, cancelWorkOrder, completeWorkOrder, createServiceInterval, createWorkOrder, linkWorkOrderRental, removeWorkOrderLine, setIntervalActive, updateWorkOrder } from "@/lib/services/shop";
 import { fmtDate } from "@/lib/dates";
+import { setCreditTerms } from "@/lib/services/credit";
 import { disconnectQbo, kickQboSync, retryQboJob, runQboSyncNow, setQboMapping, updateQboSettings } from "@/lib/services/quickbooks";
 
 const str = (fd: FormData, k: string) => { const v = fd.get(k); return typeof v === "string" ? v : ""; };
@@ -149,7 +150,7 @@ export async function createRentalAction(fd: FormData) {
       billing_method: str(fd, "billing_method"), rate_amount: str(fd, "rate_amount"), rate_basis: str(fd, "rate_basis"), delivery_charge: str(fd, "delivery_charge") || "0",
       pickup_charge: str(fd, "pickup_charge") || "0", taxable: bool(fd, "taxable"), payment_terms_days: str(fd, "payment_terms_days"), quipli_reference: str(fd, "quipli_reference"),
       internal_notes: str(fd, "internal_notes"), fees,
-    });
+    }, { creditOverrideReason: str(fd, "credit_override_reason") || null });
     const file = fd.get("agreement");
     if (file instanceof File && file.size > 0) await addContractDocument(u, contract.id, { filename: file.name, mime: file.type, content: Buffer.from(await file.arrayBuffer()) });
     return { to: `/rentals/${line.id}`, msg: `Rental ${contract.contract_number} created.` };
@@ -624,4 +625,12 @@ export async function qboSyncNowAction(fd: FormData) {
 }
 export async function qboRetryAction(fd: FormData) {
   await run(fd, "/quickbooks", async (u) => { await retryQboJob(u, str(fd, "job_id")); after(kickQboSync); return "Queued to try again."; });
+}
+
+// ───────── Credit limits
+export async function setCreditTermsAction(fd: FormData) {
+  await run(fd, "/customers", async (u) => {
+    const r = await setCreditTerms(u, str(fd, "customer_id"), { credit_limit: str(fd, "credit_limit"), credit_hold: bool(fd, "credit_hold"), credit_note: str(fd, "credit_note") });
+    return r.credit_hold ? "Saved. The customer is on credit hold: new rentals are stopped until a manager overrides or the hold is lifted." : "Credit terms saved.";
+  });
 }

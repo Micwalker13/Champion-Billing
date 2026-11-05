@@ -2,10 +2,11 @@ import { maxUploadMb } from "../limits";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { AppError, Db, audit, one, pool, q, tx } from "../db";
+import { checkCreditForNewRental } from "./credit";
 import { SessionUser, requirePerm } from "../permissions";
 import { BillingMethod, LineWindow, ProrationPolicy, RateBasis } from "../billing";
 import { normalizeUnit } from "../po";
-import { addDays, isIsoDate } from "../dates";
+import { addDays, isIsoDate, todayCentral } from "../dates";
 import { UNIT_STATUS_LABELS, logEvent } from "./inventory";
 import { Coi, activeCois } from "./insurance";
 import { FeeConfig, customerExemptions, loadFeeConfig, overridesFor, unitFeeSettings } from "./fees";
@@ -155,10 +156,16 @@ export const rentalSchema = z.object({
   fees: z.array(z.object({ description: z.string().trim().min(1), amount: moneyStr, frequency: z.enum(["per_period", "one_time"]), taxable: z.boolean() })).default([]),
 });
 
-export async function createRental(user: SessionUser, input: unknown) {
+/** A new rental written here. If it starts today or later, it is stopped when the customer is on credit hold or over its credit limit, unless a manager overrides. */
+export async function createRental(user: SessionUser, input: unknown, opts: { creditOverrideReason?: string | null } = {}) {
   requirePerm(user, "edit_records");
   const r = rentalSchema.parse(input);
-  return tx((db) => createRentalInTx(db, user, r));
+  return tx(async (db) => {
+    // A rental that started before today is already out with the customer (often entered from Quipli),
+    // so it is never stopped: billing it is how the money gets collected.
+    if (r.start_date >= todayCentral()) await checkCreditForNewRental(db, user, r.customer_id, opts.creditOverrideReason);
+    return createRentalInTx(db, user, r);
+  });
 }
 
 export async function createRentalInTx(db: Db, user: SessionUser, r: z.infer<typeof rentalSchema>) {

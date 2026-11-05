@@ -17,7 +17,7 @@ export default async function Customers({ searchParams }: { searchParams: Promis
       <Flash sp={sp} />
       <div className="table-wrap" style={{ marginBottom: 16 }}><table>
         <thead><tr><th>Customer</th><th>ID</th><th>Billing</th><th>Monthly PO</th><th>Proration</th><th className="num">Active rentals</th></tr></thead>
-        <tbody>{rows.map((c: any) => <tr key={c.id}><td><a href={`/customers/${c.id}`}>{c.name}</a></td><td className="mono">{c.customer_code}</td><td>{BILLING_METHOD_LABELS[c.billing_method as keyof typeof BILLING_METHOD_LABELS]}</td>
+        <tbody>{rows.map((c: any) => <tr key={c.id}><td><a href={`/customers/${c.id}`}>{c.name}</a>{c.credit_hold && <> <span className="badge b-bad">Credit hold</span></>}</td><td className="mono">{c.customer_code}</td><td>{BILLING_METHOD_LABELS[c.billing_method as keyof typeof BILLING_METHOD_LABELS]}</td>
           <td>{c.require_monthly_po ? <span className="badge b-accent">Required</span> : "—"}</td><td>{c.proration_policy === "unapproved" ? <span className="badge b-warn">Not approved</span> : c.proration_policy.replace(/_/g, " ")}</td><td className="num">{c.active}</td></tr>)}</tbody>
       </table></div>
       {can(user, "edit_records") && <form className="card" action={createCustomerAction}>
