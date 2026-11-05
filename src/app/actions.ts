@@ -18,6 +18,7 @@ import { createYard, exchangeUnit, updateUnit } from "@/lib/services/inventory";
 import { createSale, finalizeSale, recordSalePayment, voidSale } from "@/lib/services/sales";
 import { issueCredit } from "@/lib/services/credits";
 import { emailCredit, emailInvoice, emailMonth, setInvoiceEmails } from "@/lib/services/email";
+import { saveUsage, setDamageWaiverWaived, updateUsageSettings } from "@/lib/services/usage";
 import { fmtDate } from "@/lib/dates";
 
 const str = (fd: FormData, k: string) => { const v = fd.get(k); return typeof v === "string" ? v : ""; };
@@ -355,4 +356,28 @@ export async function emailMonthAction(fd: FormData) {
 }
 export async function setInvoiceEmailsAction(fd: FormData) {
   await run(fd, "/customers", async (u) => { const a = await setInvoiceEmails(u, str(fd, "customer_id"), str(fd, "invoice_emails")); return a.length ? `Invoices will be emailed to ${a.join(", ")}.` : "Invoice email cleared."; });
+}
+
+// ───────── Hour meter, fuel and add-on charges
+export async function saveUsageAction(fd: FormData) {
+  await invAction((u, id, fd) => saveUsage(u, id, fd.getAll("eid").map((e) => String(e)).map((e) => ({
+    equipment_id: e, start_hours: str(fd, `start_${e}`), end_hours: str(fd, `end_${e}`), fuel_gallons: str(fd, `fuel_${e}`),
+  }))), "Readings saved and the invoice recalculated.")(fd);
+}
+export async function usageSettingsAction(fd: FormData) {
+  await run(fd, "/customers", async (u) => {
+    await updateUsageSettings(u, str(fd, "customer_id"), {
+      overtime_enabled: bool(fd, "overtime_enabled"), hours_per_day: str(fd, "hours_per_day"), hours_per_week: str(fd, "hours_per_week"),
+      hours_per_month: str(fd, "hours_per_month"), overtime_multiplier: str(fd, "overtime_multiplier"), damage_waiver_pct: str(fd, "damage_waiver_pct"),
+      environmental_pct: str(fd, "environmental_pct"), fuel_price_per_gallon: str(fd, "fuel_price_per_gallon"),
+    });
+    return "Extra-hours and add-on settings saved. They apply to invoices generated or recalculated from now on.";
+  });
+}
+export async function damageWaiverAction(fd: FormData) {
+  await run(fd, "/rentals", async (u) => {
+    const waived = str(fd, "waived") === "true";
+    await setDamageWaiverWaived(u, str(fd, "line_id"), waived, str(fd, "reason"));
+    return waived ? "Damage waiver waived on this rental." : "Damage waiver applies to this rental again.";
+  });
 }

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { AppError, Db, audit, one, pool, q, tx } from "../db";
 import { SessionUser, requirePerm } from "../permissions";
-import { BILLING_METHOD_LABELS, ProrationNotApprovedError, RateBasisMismatchError, billedPeriodFor, computeRentalCharge, computeTax, lastBillableDay } from "../billing";
+import { BILLING_METHOD_LABELS, OvertimeResult, ProrationNotApprovedError, RateBasisMismatchError, billedPeriodFor, computeOvertime, computeRentalCharge, computeTax, lastBillableDay } from "../billing";
 import { D, cents, dec, money } from "../money";
 import { addDays, fmtDate, todayCentral } from "../dates";
 import { validatePoFormat } from "../po";
@@ -33,7 +33,13 @@ export interface DraftCalc {
   oneTimeFeeIds: string[];
 }
 
-export function calculatePeriod(ctx: LineContext, period: { period_start: string; period_end: string }): DraftCalc {
+/** Hour meter readings and fuel entered for one billing period, one row per unit on site. */
+export interface UsageRow { equipment_id: string; start_hours: string | null; end_hours: string | null; fuel_gallons: string | null }
+
+const fmtHours = (v: string) => Number(v).toLocaleString("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+const pctText = (v: string) => `${dec(v).mul(100).toDecimalPlaces(2).toString()}%`;
+
+export function calculatePeriod(ctx: LineContext, period: { period_start: string; period_end: string; usage?: UsageRow[] }): DraftCalc {
   const billed = { start: period.period_start, end: period.period_end };
   const bp = billedPeriodFor(ctx.window, billed.start);
   if (!bp || bp.start !== billed.start || bp.end !== billed.end)
@@ -56,6 +62,36 @@ export function calculatePeriod(ctx: LineContext, period: { period_start: string
     description: `Rental — ${units} — ${fmtDate(billed.start)} to ${fmtDate(billed.end)} (${rc.explanation})`,
     quantity: rc.quantity, unit: rc.unit, unit_price: rc.unitPrice, amount: rc.amount, taxable: ctx.line.taxable,
   }];
+  // Usage-based charges. Each is off until the customer's billing profile turns it on.
+  const p = ctx.profile;
+  const usage = period.usage ?? [];
+  const usageFor = (g: { equipment: any }) => usage.find((u) => String(u.equipment_id) === String(g.equipment.id));
+  let overtime: OvertimeResult | null = null;
+  if (p.overtime_enabled) {
+    const readings = segs.map((g) => ({ unit: g.equipment.unit_number, start: usageFor(g)?.start_hours ?? null, end: usageFor(g)?.end_hours ?? null }));
+    overtime = computeOvertime({ rateAmount: ctx.line.rate_amount, rateBasis: ctx.rateBasis, billedDays: rc.billedDays, isPartial: rc.isPartial,
+      hoursPerDay: p.hours_per_day, hoursPerWeek: p.hours_per_week, hoursPerMonth: p.hours_per_month, multiplier: p.overtime_multiplier, readings });
+    if (overtime.status === "ok" && dec(overtime.amount).gt(0)) {
+      const meters = readings.map((r) => `${readings.length > 1 ? `${r.unit} ` : ""}meter ${fmtHours(r.start!)} to ${fmtHours(r.end!)}`).join("; ");
+      lines.push({ kind: "overtime", description: `Extra hours — ${overtime.explanation} (${meters})`,
+        quantity: dec(overtime.over).toFixed(4), unit: "hour", unit_price: overtime.unitPrice, amount: overtime.amount, taxable: ctx.line.taxable });
+    }
+  }
+  const rentalAmount = dec(rc.amount);
+  if (p.damage_waiver_pct && !ctx.line.damage_waiver_waived && rentalAmount.gt(0)) {
+    const amt = money(rentalAmount.mul(p.damage_waiver_pct));
+    lines.push({ kind: "damage_waiver", description: `Damage waiver (${pctText(p.damage_waiver_pct)} of rental)`, quantity: "1.0000", unit: "each", unit_price: dec(amt).toFixed(4), amount: amt, taxable: ctx.line.taxable });
+  }
+  if (p.environmental_pct && rentalAmount.gt(0)) {
+    const amt = money(rentalAmount.mul(p.environmental_pct));
+    lines.push({ kind: "environmental", description: `Environmental fee (${pctText(p.environmental_pct)} of rental)`, quantity: "1.0000", unit: "each", unit_price: dec(amt).toFixed(4), amount: amt, taxable: ctx.line.taxable });
+  }
+  const gallons = usage.reduce((s, u) => s.add(dec(u.fuel_gallons)), new D(0));
+  if (gallons.gt(0) && p.fuel_price_per_gallon) {
+    lines.push({ kind: "fuel", description: `Fuel — ${gallons.toFixed(1)} gallons × ${dec(p.fuel_price_per_gallon).toFixed(2)}/gal`,
+      quantity: gallons.toFixed(4), unit: "gallon", unit_price: dec(p.fuel_price_per_gallon).toFixed(4), amount: money(gallons.mul(p.fuel_price_per_gallon)), taxable: ctx.line.taxable });
+  }
+
   const firstPeriod = billed.start === ctx.line.billing_start_date;
   if (firstPeriod && ctx.line.billing_start_date === ctx.line.on_rent_date && dec(ctx.line.delivery_charge).gt(0)) {
     lines.push({ kind: "delivery", description: "Delivery", quantity: "1.0000", unit: "each", unit_price: dec(ctx.line.delivery_charge).toFixed(4), amount: money(ctx.line.delivery_charge), taxable: ctx.line.taxable });
@@ -80,7 +116,8 @@ export function calculatePeriod(ctx: LineContext, period: { period_start: string
   return {
     lines, subtotal: money(subtotal), taxable_amount: money(taxable), tax_rate: taxRate, tax_amount: tax, total: total.toFixed(2), oneTimeFeeIds,
     calc: { method: ctx.method, rate_basis: ctx.rateBasis, rate: ctx.line.rate_amount, proration_policy: ctx.profile.proration_policy,
-      billed_days: rc.billedDays, period_days: rc.periodDays, partial: rc.isPartial, nominal: bp.nominal, explanation: rc.explanation },
+      billed_days: rc.billedDays, period_days: rc.periodDays, partial: rc.isPartial, nominal: bp.nominal, explanation: rc.explanation,
+      overtime, fuel_gallons: gallons.toFixed(1), fuel_unpriced: gallons.gt(0) && !p.fuel_price_per_gallon },
   };
 }
 
@@ -119,11 +156,15 @@ async function history(db: Db, invoiceId: string, from: string | null, to: strin
   await db.query(`INSERT INTO invoice_status_history(invoice_id,from_status,to_status,user_id,note) VALUES ($1,$2,$3,$4,$5)`, [invoiceId, from, to, userId, note ?? null]);
 }
 
+export async function periodUsage(db: Db, periodId: string): Promise<UsageRow[]> {
+  return q(`SELECT equipment_id, start_hours, end_hours, fuel_gallons FROM period_usage WHERE billing_period_id=$1 ORDER BY id`, [periodId], db) as Promise<UsageRow[]>;
+}
+
 /** Estimate (no writes besides the idempotent billing period) used for import reconciliation. */
 export async function estimateForMonth(db: Db, lineId: string, month: string) {
   const ctx = await loadLineContext(lineId, db);
   const period = await ensureBillingPeriod(db, ctx, month);
-  return calculatePeriod(ctx, period);
+  return calculatePeriod(ctx, { ...period, usage: await periodUsage(db, period.id) });
 }
 
 // ───────────────────────── Generation ─────────────────────────
@@ -139,7 +180,7 @@ async function generateInTx(db: Db, user: SessionUser, lineId: string, periodRef
   if (overlap) throw new DuplicateInvoiceError({ id: overlap.id, invoice_number: overlap.invoice_number, status: "overlapping" });
 
   const assignment = await activePoForPeriod(period.id, db);
-  const calc = calculatePeriod(ctx, period);
+  const calc = calculatePeriod(ctx, { ...period, usage: await periodUsage(db, period.id) });
   const company = await companySettings(db);
   const snapshot = buildSnapshot(ctx, company, assignment, period);
   const inv = await one(
@@ -195,7 +236,7 @@ async function refreshInTx(db: Db, user: SessionUser, inv: any) {
   const period = await ensureBillingPeriod(db, ctx, inv.period_start);
   if (period.id !== inv.billing_period_id) throw new AppError("The rental's billable dates changed so this period no longer exists. Void this draft and generate a new one.");
   const assignment = await activePoForPeriod(period.id, db);
-  const calc = calculatePeriod(ctx, period);
+  const calc = calculatePeriod(ctx, { ...period, usage: await periodUsage(db, period.id) });
   const snapshot = buildSnapshot(ctx, await companySettings(db), assignment, period);
   const after = await one(
     `UPDATE invoices SET po_assignment_id=$2, po_number=$3, period_start=$4, period_end=$5, subtotal=$6, taxable_amount=$7, tax_rate=$8, tax_amount=$9, total=$10,
@@ -301,7 +342,7 @@ export async function validateInvoice(id: string, db: Db = pool()): Promise<Chec
   // 9. Amount recalculation
   if (!inv.finalized_at) {
     try {
-      const calc = calculatePeriod(ctx, { period_start: inv.period_start, period_end: inv.period_end });
+      const calc = calculatePeriod(ctx, { period_start: inv.period_start, period_end: inv.period_end, usage: await periodUsage(db, inv.billing_period_id) });
       const lines = await q(`SELECT amount FROM invoice_lines WHERE invoice_id=$1`, [id], db);
       const lineSum = lines.reduce((s, l) => s.add(l.amount), new D(0));
       if (calc.total !== inv.total || !lineSum.eq(inv.subtotal)) add("amount", "Amount calculated correctly", "fail", `Recalculated total is ${calc.total} but invoice shows ${inv.total}. Recalculate the invoice.`, false);
@@ -329,7 +370,24 @@ export async function validateInvoice(id: string, db: Db = pool()): Promise<Chec
     else add("po_variance", "Invoice total vs PO estimate", rec.variance === "0.00" ? "pass" : "info", `Variance ${rec.variance} (${rec.pct}%) is within tolerance ${rec.tolerance}.`);
   }
 
-  // 13. Placeholders
+  // 13. Hour meter readings (extra hours) and fuel
+  const ot = inv.calc_details?.overtime as OvertimeResult | null | undefined;
+  if (inv.finalized_at) {
+    if (ot?.status === "ok") add("hour_meter", "Hour meter readings", "info", `Frozen at finalization: ${ot.explanation}.`, false);
+  } else if (p.overtime_enabled) {
+    const units = onSite.map((g) => g.equipment.unit_number).join(" and ");
+    if (!ot || ot.status === "missing")
+      add("hour_meter", "Hour meter readings", "fail", `${ctx.customer.name} is billed for extra hours, but the start and end hour meter readings for unit ${units} aren't entered. Enter them on this invoice, or approve the exception to bill without extra hours.`);
+    else if (ot.status === "invalid")
+      add("hour_meter", "Hour meter readings", "fail", `The end reading is lower than the start reading for unit ${ot.units.join(", ")}. Correct the readings.`, false);
+    else if (ot.status === "partial")
+      add("hour_meter", "Hour meter readings", "warn", "This is a partial billing period, so extra hours aren't calculated automatically. Approve the exception to bill without them, or add them as an adjustment.");
+    else add("hour_meter", "Hour meter readings", "pass", `${ot.explanation}${dec(ot.amount).gt(0) ? ` = ${ot.amount}` : " (none billed)"}.`);
+  }
+  if (!inv.finalized_at && inv.calc_details?.fuel_unpriced)
+    add("fuel_price", "Fuel price", "warn", "Fuel gallons were entered but no fuel price per gallon is set for this customer, so fuel isn't billed. Set the price on the customer page and recalculate, or approve the exception.");
+
+  // 14. Placeholders
   if (snap.company?.is_placeholder || snap.tax?.is_placeholder)
     add("placeholders", "Company and tax details confirmed", "warn", "The invoice still uses placeholder company information or a placeholder tax rate. Confirm them in Settings, or approve the exception.");
   return checks;
@@ -549,5 +607,5 @@ export async function invoiceDetail(id: string, db: Db = pool()) {
     q(`SELECT id, invoice_number, status, revision_no FROM invoices WHERE revision_of=$1 OR id=$2 ORDER BY revision_no`, [id, inv.revision_of ?? 0], db),
   ]);
   const checks = await validateInvoice(id, db);
-  return { inv, lines, attachments, history: hist, payments, checks, reconciliation: reconcile(inv, profile), revisions };
+  return { inv, lines, attachments, history: hist, payments, checks, reconciliation: reconcile(inv, profile), revisions, profile };
 }

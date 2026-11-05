@@ -185,3 +185,46 @@ export function computeTax(taxable: Dec | string, rate: string): string {
 
 /** Next month first-of-month after the given date's month. */
 export const nextMonth = (d: string) => addMonths(monthStart(d), 1);
+
+// ───────────────────────── Hour-meter overtime ─────────────────────────
+// Champion's rates cover an 8-hour day, 40-hour week and 160-hour month. Each hour over that is
+// billed at (rate / included hours) x multiplier, e.g. $3,250 / 160 x 1.5 = $30.47 an hour.
+export interface OvertimeInput {
+  rateAmount: string;
+  rateBasis: RateBasis;
+  billedDays: number;
+  isPartial: boolean;
+  hoursPerDay: string; hoursPerWeek: string; hoursPerMonth: string;
+  multiplier: string;
+  /** One reading pair per unit on site during the period (two when exchanged). */
+  readings: Array<{ unit: string; start: string | null; end: string | null }>;
+}
+export type OvertimeResult =
+  | { status: "ok"; used: string; included: string; over: string; hourly: string; unitPrice: string; amount: string; multiplier: string; explanation: string }
+  | { status: "missing"; units: string[] }
+  | { status: "invalid"; units: string[] }
+  | { status: "partial" };
+
+const blank = (v: string | null) => v == null || v === "";
+
+export function computeOvertime(i: OvertimeInput): OvertimeResult {
+  if (i.isPartial && i.rateBasis !== "daily") return { status: "partial" };
+  const missing = i.readings.filter((r) => blank(r.start) || blank(r.end));
+  if (!i.readings.length || missing.length) return { status: "missing", units: missing.map((r) => r.unit) };
+  const invalid = i.readings.filter((r) => new D(r.end!).lt(r.start!));
+  if (invalid.length) return { status: "invalid", units: invalid.map((r) => r.unit) };
+  const used = i.readings.reduce((s, r) => s.add(new D(r.end!).sub(r.start!)), new D(0));
+  const basisHours = new D(i.rateBasis === "daily" ? i.hoursPerDay : i.rateBasis === "weekly" ? i.hoursPerWeek : i.hoursPerMonth);
+  const included = i.rateBasis === "daily" ? basisHours.mul(i.billedDays) : basisHours;
+  const over = D.max(used.sub(included), 0);
+  const hourly = new D(i.rateAmount).div(basisHours);
+  const mult = new D(i.multiplier);
+  const unitPrice = hourly.mul(mult);
+  const amount = cents(over.mul(unitPrice));
+  const per = i.rateBasis === "daily" ? `${basisHours.toFixed(1)} hrs/day x ${i.billedDays} days` : `${basisHours.toFixed(1)} hrs per ${UNIT_NAME[i.rateBasis]}`;
+  return {
+    status: "ok", used: used.toFixed(1), included: included.toFixed(1), over: over.toFixed(1), hourly: hourly.toFixed(4),
+    unitPrice: unitPrice.toFixed(4), amount: amount.toFixed(2), multiplier: mult.toString(),
+    explanation: `${used.toFixed(1)} hrs used, ${included.toFixed(1)} included (${per}); ${over.toFixed(1)} extra hrs × ${hourly.toFixed(2)}/hr × ${mult.toString()}`,
+  };
+}

@@ -4,7 +4,7 @@ import { can } from "@/lib/permissions";
 import { one } from "@/lib/db";
 import { BILLING_METHOD_LABELS, PRORATION_LABELS } from "@/lib/billing";
 import { Flash } from "@/components/ui";
-import { approveProrationAction, setInvoiceEmailsAction, updateCustomerAction, updateProfileAction } from "../../../actions";
+import { usageSettingsAction, approveProrationAction, setInvoiceEmailsAction, updateCustomerAction, updateProfileAction } from "../../../actions";
 import { emailEnabled } from "@/lib/services/email";
 
 export default async function CustomerPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<Record<string, string>> }) {
@@ -50,6 +50,23 @@ export default async function CustomerPage({ params, searchParams }: { params: P
         <p className="small muted">Each approved invoice goes out as its own email with the PO, unit and period in the subject line. Separate several addresses with commas.{!emailEnabled() && " Email isn't switched on yet, so nothing will be sent until it is."}</p>
         <div className="row"><div className="field" style={{ flexBasis: 420 }}><label>Invoice email address(es)</label><input name="invoice_emails" defaultValue={p.invoice_emails ?? c.email ?? ""} placeholder="ap@customer.com" disabled={!can(user, "edit_records")} /></div>
           {can(user, "edit_records") && <button>Save</button>}</div>
+      </form>
+      <form className="card" action={usageSettingsAction}>
+        <h2>Extra hours and add-on charges</h2><input type="hidden" name="customer_id" value={id} /><input type="hidden" name="back" value={back} />
+        <p className="small muted">The rental rate covers a set number of machine hours. With extra hours on, each invoice asks for the start and end hour meter readings, and every hour over the included hours is billed at the rate ÷ included hours × the multiplier (for example $3,250 ÷ 160 × 1.5 = $30.47 an hour). Add-ons left blank are not charged. Changes apply to invoices generated or recalculated afterwards; approved invoices never change.</p>
+        <label className="check"><input type="checkbox" name="overtime_enabled" defaultChecked={p.overtime_enabled} disabled={!admin} /> Bill extra hours from the hour meter</label>
+        <div className="row">
+          <div className="field"><label>Hours a day</label><input name="hours_per_day" defaultValue={Number(p.hours_per_day).toString()} inputMode="decimal" disabled={!admin} style={{ width: 90 }} /></div>
+          <div className="field"><label>Hours a week</label><input name="hours_per_week" defaultValue={Number(p.hours_per_week).toString()} inputMode="decimal" disabled={!admin} style={{ width: 90 }} /></div>
+          <div className="field"><label>Hours a month</label><input name="hours_per_month" defaultValue={Number(p.hours_per_month).toString()} inputMode="decimal" disabled={!admin} style={{ width: 90 }} /></div>
+          <div className="field"><label>Extra-hour multiplier</label><input name="overtime_multiplier" defaultValue={Number(p.overtime_multiplier).toString()} inputMode="decimal" disabled={!admin} style={{ width: 90 }} /></div>
+        </div>
+        <div className="row">
+          <div className="field"><label>Damage waiver (% of rental)</label><input name="damage_waiver_pct" defaultValue={p.damage_waiver_pct ? (Number(p.damage_waiver_pct) * 100).toString() : ""} placeholder="Off" inputMode="decimal" disabled={!admin} style={{ width: 110 }} /></div>
+          <div className="field"><label>Environmental fee (% of rental)</label><input name="environmental_pct" defaultValue={p.environmental_pct ? (Number(p.environmental_pct) * 100).toString() : ""} placeholder="Off" inputMode="decimal" disabled={!admin} style={{ width: 110 }} /></div>
+          <div className="field"><label>Fuel price per gallon</label><input name="fuel_price_per_gallon" defaultValue={p.fuel_price_per_gallon ? Number(p.fuel_price_per_gallon).toString() : ""} placeholder="Off" inputMode="decimal" disabled={!admin} style={{ width: 110 }} /></div>
+        </div>
+        {admin ? <button>Save</button> : <p className="small muted">Only an administrator can change these.</p>}
       </form>
       <form className="card" action={updateProfileAction}>
         <h2>Billing rules</h2><input type="hidden" name="customer_id" value={id} /><input type="hidden" name="back" value={back} />

@@ -4,10 +4,11 @@ import { can } from "@/lib/permissions";
 import { invoiceDetail, STATUS_LABELS } from "@/lib/services/invoices";
 import { creditsForInvoice, invoiceBalance } from "@/lib/services/credits";
 import { emailEnabled, emailsFor } from "@/lib/services/email";
+import { usageForm } from "@/lib/services/usage";
 import { fmtUSD } from "@/lib/money";
 import { fmtDate, todayCentral } from "@/lib/dates";
 import { Flash, StatusBadge } from "@/components/ui";
-import { creditAction, emailCreditAction, emailInvoiceAction, approveInvoiceAction, issueInvoiceAction, overrideAction, paymentAction, refreshInvoiceAction, rejectInvoiceAction, reviseInvoiceAction, submitInvoiceAction, voidInvoiceAction } from "../../../actions";
+import { saveUsageAction, creditAction, emailCreditAction, emailInvoiceAction, approveInvoiceAction, issueInvoiceAction, overrideAction, paymentAction, refreshInvoiceAction, rejectInvoiceAction, reviseInvoiceAction, submitInvoiceAction, voidInvoiceAction } from "../../../actions";
 
 const ICON: Record<string, string> = { pass: "✓", fail: "✗", warn: "!", info: "i" };
 
@@ -18,14 +19,17 @@ export default async function InvoicePage({ params, searchParams }: { params: Pr
   if (!/^\d+$/.test(id)) notFound();
   const d = await invoiceDetail(id);
   if (!d) notFound();
-  const { inv, lines, checks, reconciliation: rec } = d;
-  const [credits, emails] = await Promise.all([creditsForInvoice(id), emailsFor("invoice", id)]);
+  const { inv, lines, checks, reconciliation: rec, profile } = d;
+  const [credits, emails, usage] = await Promise.all([creditsForInvoice(id), emailsFor("invoice", id), usageForm(id).catch(() => [])]);
   const mailOn = emailEnabled();
   const s = inv.snapshot;
   const back = `/invoices/${id}`;
   const blocking = checks.filter((c) => (c.status === "fail" || c.status === "warn") && !c.override);
   const H = ({ children }: { children: React.ReactNode }) => <><input type="hidden" name="id" value={id} /><input type="hidden" name="back" value={back} />{children}</>;
   const finalized = !!inv.finalized_at;
+  const showUsage = profile?.overtime_enabled || profile?.fuel_price_per_gallon || usage.some((u) => u.saved);
+  const usageEditable = ["draft", "rejected"].includes(inv.status) && can(user, "generate_invoice");
+  const hrs = (v: string | null) => (v == null ? "—" : Number(v).toLocaleString("en-US", { minimumFractionDigits: 1 }));
 
   return (
     <>
@@ -90,6 +94,42 @@ export default async function InvoicePage({ params, searchParams }: { params: Pr
         </table></div>
         <p className="small muted">{inv.calc_details?.explanation}</p>
       </div>
+
+      {showUsage && <div className="card">
+        <h2>Hour meter and fuel</h2>
+        <p className="small muted">
+          {profile?.overtime_enabled
+            ? `The rate covers ${Number(profile.hours_per_month)} hours a month (${Number(profile.hours_per_day)} a day, ${Number(profile.hours_per_week)} a week). Each extra hour is billed at the rate ÷ included hours × ${Number(profile.overtime_multiplier)}.`
+            : "Extra hours aren't billed for this customer; readings still go into each unit's hour meter history."}
+          {" "}{profile?.fuel_price_per_gallon ? `Fuel is billed at ${fmtUSD(profile.fuel_price_per_gallon)} a gallon.` : ""}
+          {usage.length > 1 ? " The unit was exchanged during this period, so enter readings for each unit." : ""}
+        </p>
+        {usageEditable ? (
+          <form action={saveUsageAction}><H>
+            <div className="table-wrap"><table>
+              <thead><tr><th>Unit</th><th>On site</th><th>Start reading</th><th>End reading</th><th>Fuel added (gal)</th></tr></thead>
+              <tbody>{usage.map((u) => <tr key={u.equipment_id}>
+                <td><input type="hidden" name="eid" value={u.equipment_id} /><strong>{u.unit_number}</strong> <span className="muted small">{u.description}</span></td>
+                <td className="small">{fmtDate(u.from)} – {fmtDate(u.to)}</td>
+                <td><input name={`start_${u.equipment_id}`} inputMode="decimal" defaultValue={u.start_hours ?? u.start_hint ?? ""} aria-label={`Start reading for ${u.unit_number}`} style={{ width: 110 }} />
+                  {!u.start_hours && u.start_hint && <div className="small muted">From {u.start_source}</div>}</td>
+                <td><input name={`end_${u.equipment_id}`} inputMode="decimal" defaultValue={u.end_hours ?? u.end_hint ?? ""} aria-label={`End reading for ${u.unit_number}`} style={{ width: 110 }} />
+                  {!u.end_hours && u.end_hint && <div className="small muted">From {u.end_source}</div>}</td>
+                <td><input name={`fuel_${u.equipment_id}`} inputMode="decimal" defaultValue={Number(u.fuel_gallons) ? u.fuel_gallons : ""} aria-label={`Fuel for ${u.unit_number}`} style={{ width: 90 }} /></td>
+              </tr>)}</tbody>
+            </table></div>
+            <button style={{ marginTop: 8 }}>Save readings and recalculate</button>
+          </H></form>
+        ) : (
+          <div className="table-wrap"><table>
+            <thead><tr><th>Unit</th><th>On site</th><th className="num">Start</th><th className="num">End</th><th className="num">Hours</th><th className="num">Fuel (gal)</th></tr></thead>
+            <tbody>{usage.map((u) => <tr key={u.equipment_id}><td>{u.unit_number}</td><td className="small">{fmtDate(u.from)} – {fmtDate(u.to)}</td>
+              <td className="num">{hrs(u.start_hours)}</td><td className="num">{hrs(u.end_hours)}</td>
+              <td className="num">{u.start_hours != null && u.end_hours != null ? hrs((Number(u.end_hours) - Number(u.start_hours)).toFixed(1)) : "—"}</td>
+              <td className="num">{Number(u.fuel_gallons) ? u.fuel_gallons : "—"}</td></tr>)}</tbody>
+          </table></div>
+        )}
+      </div>}
 
       {rec && <div className="card">
         <h2>PO value reconciliation</h2>
