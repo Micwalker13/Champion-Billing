@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import { ZodError } from "zod";
 import { getUser } from "@/lib/session";
 import { SessionUser, requirePerm } from "@/lib/permissions";
-import { SESSION_COOKIE, createUser, login, logout, setUserActive } from "@/lib/services/auth";
+import { SESSION_COOKIE, changePassword, createUser, login, logout, resetUserPassword, setUserActive } from "@/lib/services/auth";
 import { addContractDocument, approveProrationPolicy, changeLineStatus, createCustomer, createEquipment, createRental, updateBillingProfile, updateCustomer, updateRentalTerms } from "@/lib/services/records";
 import { assignPo, removePoAssignment } from "@/lib/services/pos";
 import { approveInvoice, DuplicateInvoiceError, generateInvoice, generateMonthForCustomer, issueInvoice, overrideCheck, recordPayment, refreshInvoice, rejectInvoice, reviseInvoice, submitForReview, voidInvoice } from "@/lib/services/invoices";
@@ -380,4 +380,17 @@ export async function damageWaiverAction(fd: FormData) {
     await setDamageWaiverWaived(u, str(fd, "line_id"), waived, str(fd, "reason"));
     return waived ? "Damage waiver waived on this rental." : "Damage waiver applies to this rental again.";
   });
+}
+
+// ───────── Passwords
+export async function changePasswordAction(fd: FormData) {
+  await run(fd, "/account", async (u) => {
+    if (str(fd, "new_password") !== str(fd, "confirm_password")) throw new Error("The new passwords don't match.");
+    const c = await cookies();
+    await changePassword(u, str(fd, "current_password"), str(fd, "new_password"), c.get(SESSION_COOKIE)?.value);
+    return "Password changed. Any other devices you were signed in on have been signed out.";
+  });
+}
+export async function resetPasswordAction(fd: FormData) {
+  await run(fd, "/settings", async (u) => { await resetUserPassword(u, str(fd, "id"), str(fd, "temporary_password")); return "Temporary password set. Give it to them privately and ask them to change it under My account."; });
 }
