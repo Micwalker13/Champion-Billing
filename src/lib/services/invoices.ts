@@ -7,6 +7,7 @@ import { addDays, fmtDate, todayCentral } from "../dates";
 import { validatePoFormat } from "../po";
 import { LineContext, loadLineContext, unitSegments } from "./records";
 import { activePoForPeriod, ensureBillingPeriod } from "./pos";
+import { RdwDecision, rdwDecision } from "./insurance";
 import { renderInvoicePdf } from "../pdf";
 
 export class DuplicateInvoiceError extends AppError {
@@ -78,7 +79,8 @@ export function calculatePeriod(ctx: LineContext, period: { period_start: string
     }
   }
   const rentalAmount = dec(rc.amount);
-  if (p.damage_waiver_pct && !ctx.line.damage_waiver_waived && rentalAmount.gt(0)) {
+  const rdw = rdwDecision({ pct: p.damage_waiver_pct, choice: p.rdw_choice ?? "rdw", lineWaived: !!ctx.line.damage_waiver_waived, cois: ctx.cois ?? [], start: billed.start, end: billed.end });
+  if (rdw.status === "billed" && rentalAmount.gt(0)) {
     const amt = money(rentalAmount.mul(p.damage_waiver_pct));
     lines.push({ kind: "damage_waiver", description: `Damage waiver (${pctText(p.damage_waiver_pct)} of rental)`, quantity: "1.0000", unit: "each", unit_price: dec(amt).toFixed(4), amount: amt, taxable: ctx.line.taxable });
   }
@@ -117,7 +119,7 @@ export function calculatePeriod(ctx: LineContext, period: { period_start: string
     lines, subtotal: money(subtotal), taxable_amount: money(taxable), tax_rate: taxRate, tax_amount: tax, total: total.toFixed(2), oneTimeFeeIds,
     calc: { method: ctx.method, rate_basis: ctx.rateBasis, rate: ctx.line.rate_amount, proration_policy: ctx.profile.proration_policy,
       billed_days: rc.billedDays, period_days: rc.periodDays, partial: rc.isPartial, nominal: bp.nominal, explanation: rc.explanation,
-      overtime, fuel_gallons: gallons.toFixed(1), fuel_unpriced: gallons.gt(0) && !p.fuel_price_per_gallon },
+      overtime, rdw, fuel_gallons: gallons.toFixed(1), fuel_unpriced: gallons.gt(0) && !p.fuel_price_per_gallon },
   };
 }
 
@@ -386,6 +388,17 @@ export async function validateInvoice(id: string, db: Db = pool()): Promise<Chec
   }
   if (!inv.finalized_at && inv.calc_details?.fuel_unpriced)
     add("fuel_price", "Fuel price", "warn", "Fuel gallons were entered but no fuel price per gallon is set for this customer, so fuel isn't billed. Set the price on the customer page and recalculate, or approve the exception.");
+
+  // 13b. Damage waiver vs certificate of insurance
+  const rdw = inv.calc_details?.rdw as RdwDecision | undefined;
+  if (rdw?.status === "waived_coi")
+    add("damage_waiver", "Damage waiver", "info", `Not billed: ${rdw.coi.insurer} certificate${rdw.coi.policy_number ? ` (policy ${rdw.coi.policy_number})` : ""} covers this period, valid through ${fmtDate(rdw.coi.expires_on)}.`, false);
+  else if (rdw?.status === "billed" && rdw.reason !== "rdw")
+    add("damage_waiver", "Damage waiver", "info", rdw.reason === "no_coi"
+      ? `Billed: ${ctx.customer.name} is set to use their own insurance, but no certificate is on file. Upload one on the customer page and recalculate to remove the waiver.`
+      : `Billed: ${ctx.customer.name}'s certificate on file (valid ${fmtDate(rdw.latest!.effective_on)} to ${fmtDate(rdw.latest!.expires_on)}) doesn't cover this whole period. Upload a current certificate and recalculate to remove the waiver.`, false);
+  else if (rdw?.status === "waived_line")
+    add("damage_waiver", "Damage waiver", "info", "Not billed: waived on this rental.", false);
 
   // 14. Placeholders
   if (snap.company?.is_placeholder || snap.tax?.is_placeholder)

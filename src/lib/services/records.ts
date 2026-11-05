@@ -7,6 +7,7 @@ import { BillingMethod, LineWindow, ProrationPolicy, RateBasis } from "../billin
 import { normalizeUnit } from "../po";
 import { addDays, isIsoDate } from "../dates";
 import { UNIT_STATUS_LABELS, logEvent } from "./inventory";
+import { Coi, activeCois } from "./insurance";
 
 const isoDate = z.string().refine(isIsoDate, "Use a valid date (YYYY-MM-DD)");
 const optIsoDate = z.union([isoDate, z.literal("")]).optional().nullable().transform((v) => (v ? v : null));
@@ -266,6 +267,8 @@ export async function addContractDocument(user: SessionUser, contractId: string,
 // ───────────────────────── Context loader ─────────────────────────
 export interface LineContext {
   line: any; contract: any; customer: any; profile: any; equipment: any; jobsite: any | null; fees: any[];
+  /** The customer's insurance certificates that haven't been removed (newest expiry first). */
+  cois?: Coi[];
   method: BillingMethod; rateBasis: RateBasis; window: LineWindow;
   /** Unit swaps on this rental, oldest first, each with the full out/in equipment rows. */
   exchanges: Array<{ id: string; exchange_date: string; reason: string; out: any; in: any }>;
@@ -300,13 +303,14 @@ export async function loadLineContext(lineId: string, db: Db = pool()): Promise<
   const equipment = await one(`SELECT * FROM equipment WHERE id=$1`, [line.equipment_id], db);
   const jobsite = contract.jobsite_id ? await one(`SELECT * FROM jobsites WHERE id=$1`, [contract.jobsite_id], db) : null;
   const fees = await q(`SELECT * FROM contract_line_fees WHERE contract_line_id=$1 ORDER BY id`, [lineId], db);
+  const cois = await activeCois(customer.id, db);
   const method: BillingMethod = contract.billing_method || profile.billing_method;
   const exRows = await q(`SELECT id, exchange_date, reason, out_equipment_id, in_equipment_id FROM equipment_exchanges WHERE contract_line_id=$1 ORDER BY exchange_date, id`, [lineId], db);
   const units = exRows.length ? await q(`SELECT * FROM equipment WHERE id = ANY($1)`, [[...new Set(exRows.flatMap((e) => [e.out_equipment_id, e.in_equipment_id]))]], db) : [];
   const byId = new Map(units.map((u) => [String(u.id), u]));
   const exchanges = exRows.map((e) => ({ id: e.id, exchange_date: e.exchange_date, reason: e.reason, out: byId.get(String(e.out_equipment_id)), in: byId.get(String(e.in_equipment_id)) }));
   return {
-    line, contract, customer, profile, equipment, jobsite, fees, method, rateBasis: line.rate_basis, exchanges,
+    line, contract, customer, profile, equipment, jobsite, fees, cois, method, rateBasis: line.rate_basis, exchanges,
     window: { method, onRentDate: line.on_rent_date, billingStartDate: line.billing_start_date, offRentDate: line.off_rent_date, billOffRentDay: profile.bill_off_rent_day },
   };
 }

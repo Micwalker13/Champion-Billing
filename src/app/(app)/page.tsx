@@ -1,6 +1,7 @@
 import { requireUser } from "@/lib/session";
 import { overview } from "@/lib/services/dashboard";
-import { addMonths, monthLabel, monthStart, todayCentral } from "@/lib/dates";
+import { coiAlerts } from "@/lib/services/insurance";
+import { addMonths, fmtDate, monthLabel, monthStart, todayCentral } from "@/lib/dates";
 import { fmtUSD } from "@/lib/money";
 import { Flash, Kpi, StatusBadge, Empty } from "@/components/ui";
 
@@ -8,7 +9,7 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
   await requireUser();
   const sp = await searchParams;
   const month = /^\d{4}-\d{2}$/.test(sp.month ?? "") ? `${sp.month}-01` : monthStart(todayCentral());
-  const o = await overview(month);
+  const [o, cois] = await Promise.all([overview(month), coiAlerts(30)]);
   const ym = month.slice(0, 7);
   return (
     <>
@@ -43,13 +44,19 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
         </div>
         <div className="card">
           <h2>Needs attention</h2>
+          {cois.map((c: any) => (
+            <div key={`coi${c.id}`} className="row" style={{ justifyContent: "space-between", padding: "5px 0", borderBottom: "1px dashed var(--line)" }}>
+              <a href={`/customers/${c.id}`}>{c.name}</a>
+              <span className="badge b-warn">{!c.expires_on ? "No insurance certificate, damage waiver billing" : c.expires_on < todayCentral() ? `Insurance expired ${fmtDate(c.expires_on)}, damage waiver billing` : `Insurance expires ${fmtDate(c.expires_on)}`}</span>
+            </div>
+          ))}
           {[...o.missingPo.map((r: any) => ({ r, why: "Missing PO" })), ...o.discrepancies.map((r: any) => ({ r, why: r.flags.filter((f: string) => f.startsWith("PO")).join(", ") }))].slice(0, 12).map(({ r, why }, i) => (
             <div key={i} className="row" style={{ justifyContent: "space-between", padding: "5px 0", borderBottom: "1px dashed var(--line)" }}>
               <span><a href={`/rentals/${r.line_id}`} className="mono">{r.unit_number}</a> <span className="muted small">{r.customer_name}</span></span>
               <span className="badge b-warn">{why}</span>
             </div>
           ))}
-          {!o.missingPo.length && !o.discrepancies.length && <Empty>Nothing needs attention for this month.</Empty>}
+          {!o.missingPo.length && !o.discrepancies.length && !cois.length && <Empty>Nothing needs attention for this month.</Empty>}
         </div>
       </div>
       <div className="card">

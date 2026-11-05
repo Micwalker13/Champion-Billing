@@ -19,6 +19,7 @@ import { createSale, finalizeSale, recordSalePayment, voidSale } from "@/lib/ser
 import { issueCredit } from "@/lib/services/credits";
 import { emailCredit, emailInvoice, emailMonth, setInvoiceEmails } from "@/lib/services/email";
 import { saveUsage, setDamageWaiverWaived, updateUsageSettings } from "@/lib/services/usage";
+import { removeCoi, setRdwChoice, uploadCoi } from "@/lib/services/insurance";
 import { acceptQuote, addQuoteLine, assignReservationUnit, cancelReservation, cancelTicket, completeTicket, convertReservation, createQuote, createReservation, declineQuote, markQuoteSent, removeQuoteLine, scheduleTicket } from "@/lib/services/dispatch";
 import { addWorkOrderLine, cancelWorkOrder, completeWorkOrder, createServiceInterval, createWorkOrder, linkWorkOrderRental, removeWorkOrderLine, setIntervalActive, updateWorkOrder } from "@/lib/services/shop";
 import { fmtDate } from "@/lib/dates";
@@ -499,4 +500,25 @@ export async function convertReservationAction(fd: FormData) {
     const { lineId } = await convertReservation(u, str(fd, "reservation_id"), { contract_number: str(fd, "contract_number"), start_date: str(fd, "start_date") || undefined });
     return { to: `/rentals/${lineId}`, msg: "Rental created from the reservation. Schedule the delivery below." };
   });
+}
+
+// ───────── Damage waiver and certificates of insurance
+export async function rdwChoiceAction(fd: FormData) {
+  await run(fd, "/customers", async (u) => {
+    const choice = str(fd, "rdw_choice");
+    await setRdwChoice(u, str(fd, "customer_id"), choice);
+    return choice === "coi" ? "Set to use the customer's own insurance. The damage waiver is skipped only while a certificate on file covers the billing period." : "Set to bill the damage waiver.";
+  });
+}
+export async function uploadCoiAction(fd: FormData) {
+  await run(fd, "/customers", async (u) => {
+    const file = fd.get("certificate");
+    if (!(file instanceof File) || file.size === 0) throw new Error("Attach the certificate (PDF, PNG or JPG).");
+    const c = await uploadCoi(u, str(fd, "customer_id"), { insurer: str(fd, "insurer"), policy_number: str(fd, "policy_number"), effective_on: str(fd, "effective_on"), expires_on: str(fd, "expires_on"),
+      file: { filename: file.name, mime: file.type, content: Buffer.from(await file.arrayBuffer()) } });
+    return `Certificate saved, valid through ${fmtDate(c.expires_on)}. Draft invoices pick it up when they are recalculated.`;
+  });
+}
+export async function removeCoiAction(fd: FormData) {
+  await run(fd, "/customers", async (u) => { await removeCoi(u, str(fd, "coi_id"), str(fd, "reason")); return "Certificate removed. The damage waiver bills again for periods it no longer covers."; });
 }

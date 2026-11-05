@@ -59,7 +59,7 @@ export default async function RentalPage({ params, searchParams }: { params: Pro
             <dt>Delivery / pickup</dt><dd>{fmtUSD(line.delivery_charge)} / {fmtUSD(line.pickup_charge)}</dd>
             <dt>Other fees</dt><dd>{fees.length ? fees.map((f: any) => <div key={f.id}>{f.description}: {fmtUSD(f.amount)} ({f.frequency === "one_time" ? "one time" : "per period"})</div>) : "—"}</dd>
             {profile.damage_waiver_pct && <><dt>Damage waiver</dt><dd>
-              {line.damage_waiver_waived ? "Waived on this rental" : `${(Number(profile.damage_waiver_pct) * 100).toString()}% of rental each period`}
+              {line.damage_waiver_waived ? "Waived on this rental" : `${(Number(profile.damage_waiver_pct) * 100).toString()}% of rental each period${profile.rdw_choice === "coi" ? ", skipped for periods the customer's insurance certificate covers" : ""}`}
               {can(user, "edit_records") && (line.damage_waiver_waived
                 ? <form action={damageWaiverAction} className="inline" style={{ marginLeft: 8 }}><H><input type="hidden" name="waived" value="false" /><button className="btn-sm">Charge it again</button></H></form>
                 : <details><summary className="small">Waive for this rental</summary><form action={damageWaiverAction} className="row"><H><input type="hidden" name="waived" value="true" />

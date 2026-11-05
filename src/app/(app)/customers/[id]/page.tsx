@@ -4,8 +4,10 @@ import { can } from "@/lib/permissions";
 import { one } from "@/lib/db";
 import { BILLING_METHOD_LABELS, PRORATION_LABELS } from "@/lib/billing";
 import { Flash } from "@/components/ui";
-import { usageSettingsAction, approveProrationAction, setInvoiceEmailsAction, updateCustomerAction, updateProfileAction } from "../../../actions";
+import { rdwChoiceAction, uploadCoiAction, removeCoiAction, usageSettingsAction, approveProrationAction, setInvoiceEmailsAction, updateCustomerAction, updateProfileAction } from "../../../actions";
 import { emailEnabled } from "@/lib/services/email";
+import { listCois } from "@/lib/services/insurance";
+import { fmtDate, todayCentral } from "@/lib/dates";
 
 export default async function CustomerPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<Record<string, string>> }) {
   const user = await requireUser();
@@ -16,6 +18,10 @@ export default async function CustomerPage({ params, searchParams }: { params: P
   if (!c) notFound();
   const p = await one(`SELECT p.*, u.name AS approver FROM customer_billing_profiles p LEFT JOIN users u ON u.id=p.proration_approved_by WHERE customer_id=$1`, [id]);
   const back = `/customers/${id}`;
+  const cois = await listCois(id);
+  const today = todayCentral();
+  const current = cois.find((x: any) => !x.removed_at && x.effective_on <= today && x.expires_on >= today);
+  const editor = can(user, "edit_records");
   const admin = can(user, "configure_billing");
   const Chk = ({ name, label }: { name: string; label: string }) => <label className="check"><input type="checkbox" name={name} defaultChecked={p[name]} disabled={!admin} /> {label}</label>;
   return (
@@ -51,6 +57,40 @@ export default async function CustomerPage({ params, searchParams }: { params: P
         <div className="row"><div className="field" style={{ flexBasis: 420 }}><label>Invoice email address(es)</label><input name="invoice_emails" defaultValue={p.invoice_emails ?? c.email ?? ""} placeholder="ap@customer.com" disabled={!can(user, "edit_records")} /></div>
           {can(user, "edit_records") && <button>Save</button>}</div>
       </form>
+      <div className="card">
+        <h2>Damage waiver or insurance certificate</h2>
+        <p className="small muted">Every rental is billed the damage waiver{p.damage_waiver_pct ? ` (${Number(p.damage_waiver_pct) * 100}% of rental)` : ""} unless the customer insures the equipment themselves. If they do, keep their certificate of insurance (COI) on file here. The waiver is skipped only for billing periods the certificate fully covers. With no certificate, or an expired one, the waiver is billed and the invoice check says why.</p>
+        {!p.damage_waiver_pct && <p><span className="badge b-warn">The damage waiver percent isn't set below, so it isn't billed to anyone yet.</span></p>}
+        <form action={rdwChoiceAction} className="row" style={{ alignItems: "flex-end" }}>
+          <input type="hidden" name="customer_id" value={id} /><input type="hidden" name="back" value={back} />
+          <label className="check" style={{ whiteSpace: "nowrap" }}><input type="radio" name="rdw_choice" value="rdw" defaultChecked={p.rdw_choice !== "coi"} disabled={!admin} /> Bill damage waiver</label>
+          <label className="check" style={{ whiteSpace: "nowrap" }}><input type="radio" name="rdw_choice" value="coi" defaultChecked={p.rdw_choice === "coi"} disabled={!admin} /> Customer has own insurance (COI on file)</label>
+          {admin && <button>Save</button>}
+        </form>
+        {p.rdw_choice === "coi" && (current
+          ? <p><span className="badge b-ok">Certificate on file through {fmtDate(current.expires_on)}</span></p>
+          : <p><span className="badge b-warn">No current certificate on file, so the damage waiver is being billed.</span></p>)}
+        {cois.length > 0 && <table className="small"><thead><tr><th>Insurer</th><th>Policy</th><th>Valid</th><th>File</th><th></th></tr></thead><tbody>
+          {cois.map((x: any) => <tr key={x.id} className={x.removed_at ? "muted" : ""}>
+            <td>{x.insurer}</td><td>{x.policy_number ?? ""}</td>
+            <td>{fmtDate(x.effective_on)} to {fmtDate(x.expires_on)}{!x.removed_at && x.expires_on < today && <> <span className="badge b-warn">Expired</span></>}</td>
+            <td><a href={`/api/insurance/${x.id}`} target="_blank">{x.filename}</a><div className="muted">Uploaded by {x.uploaded_by_name ?? "unknown"}</div></td>
+            <td>{x.removed_at ? <>Removed by {x.removed_by_name}: {x.removed_reason}</> : editor &&
+              <details><summary>Remove</summary><form action={removeCoiAction}><input type="hidden" name="coi_id" value={x.id} /><input type="hidden" name="back" value={back} />
+                <input name="reason" placeholder="Why (e.g. uploaded by mistake)" required /> <button>Remove</button></form></details>}</td>
+          </tr>)}</tbody></table>}
+        {editor && <details style={{ marginTop: 8 }}><summary>Upload a certificate</summary>
+          <form action={uploadCoiAction}><input type="hidden" name="customer_id" value={id} /><input type="hidden" name="back" value={back} />
+            <div className="row">
+              <div className="field"><label>Insurance company</label><input name="insurer" required /></div>
+              <div className="field"><label>Policy number</label><input name="policy_number" /></div>
+              <div className="field"><label>Valid from</label><input type="date" name="effective_on" required /></div>
+              <div className="field"><label>Expires</label><input type="date" name="expires_on" required /></div>
+            </div>
+            <div className="field"><label>Certificate (PDF, PNG or JPG)</label><input type="file" name="certificate" accept="application/pdf,image/png,image/jpeg" required /></div>
+            <button>Upload certificate</button>
+          </form></details>}
+      </div>
       <form className="card" action={usageSettingsAction}>
         <h2>Extra hours and add-on charges</h2><input type="hidden" name="customer_id" value={id} /><input type="hidden" name="back" value={back} />
         <p className="small muted">The rental rate covers a set number of machine hours. With extra hours on, each invoice asks for the start and end hour meter readings, and every hour over the included hours is billed at the rate ÷ included hours × the multiplier (for example $3,250 ÷ 160 × 1.5 = $30.47 an hour). Add-ons left blank are not charged. Changes apply to invoices generated or recalculated afterwards; approved invoices never change.</p>
