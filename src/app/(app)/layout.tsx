@@ -23,12 +23,14 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         <div className="who">
           <div style={{ color: "#fff" }}>{user.name}</div>
           <div>{ROLE_LABELS[user.role]}</div>
+          <a href="/account" className="small" style={{ color: "#cbd5e1" }}>My account</a>
           <form action={logoutAction} style={{ marginTop: 8 }}><button className="btn-sm" type="submit">Sign out</button></form>
         </div>
       </nav>
       <div>
         <nav className="mobile-nav" aria-label="Main mobile">
           {visible.map(([href, label]) => <a key={href} href={href}>{label}</a>)}
+          <a href="/account">My account</a>
           <form action={logoutAction} className="inline"><button className="btn-sm" type="submit">Sign out</button></form>
         </nav>
         <main className="main">{children}</main>

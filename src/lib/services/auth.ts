@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import bcrypt from "bcryptjs";
 import { AppError, Db, audit, one, pool, q } from "../db";
-import { Role, SessionUser } from "../permissions";
+import { Role, SessionUser, requirePerm } from "../permissions";
 
 export const SESSION_COOKIE = "cb_session";
 export const SESSION_HOURS = 12;
@@ -71,4 +71,28 @@ export async function setUserActive(actor: SessionUser, id: string, active: bool
 
 export async function listUsers() {
   return q(`SELECT id, email, name, role, active, created_at FROM users ORDER BY name`);
+}
+
+/** Change your own password. Signs out your other sessions; keeps this one. */
+export async function changePassword(user: SessionUser, current: string, next: string, keepToken?: string | null) {
+  const u = await one(`SELECT password_hash FROM users WHERE id=$1 AND active`, [user.id]);
+  if (!u || !(await bcrypt.compare(String(current ?? ""), u.password_hash))) throw new AppError("Your current password is incorrect.");
+  validatePassword(String(next ?? ""));
+  if (current === next) throw new AppError("Choose a new password that's different from the current one.");
+  const hash = await bcrypt.hash(next, 12);
+  await pool().query(`UPDATE users SET password_hash=$2 WHERE id=$1`, [user.id, hash]);
+  await pool().query(`DELETE FROM sessions WHERE user_id=$1 AND ($2::text IS NULL OR token_hash <> $2)`, [user.id, keepToken ? hashToken(keepToken) : null]);
+  await audit(pool(), user.id, "change_password", "user", user.id, null, null);
+}
+
+/** An administrator sets a temporary password for someone who forgot theirs. Signs them out everywhere. */
+export async function resetUserPassword(actor: SessionUser, id: string, temporary: string) {
+  requirePerm(actor, "manage_users");
+  validatePassword(String(temporary ?? ""));
+  const u = await one(`SELECT id, email FROM users WHERE id=$1`, [id]);
+  if (!u) throw new AppError("User not found", "not_found");
+  await pool().query(`UPDATE users SET password_hash=$2 WHERE id=$1`, [id, await bcrypt.hash(temporary, 12)]);
+  await pool().query(`DELETE FROM sessions WHERE user_id=$1`, [id]);
+  await pool().query(`DELETE FROM login_failures WHERE email=$1`, [u.email]);
+  await audit(pool(), actor.id, "reset_password", "user", id, null, { email: u.email });
 }
