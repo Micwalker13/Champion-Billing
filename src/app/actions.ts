@@ -1,6 +1,7 @@
 "use server";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import { after } from "next/server";
 import { ZodError } from "zod";
 import { getUser } from "@/lib/session";
 import { SessionUser, requirePerm } from "@/lib/permissions";
@@ -26,6 +27,7 @@ import { tx } from "@/lib/db";
 import { acceptQuote, addQuoteLine, assignReservationUnit, cancelReservation, cancelTicket, completeTicket, convertReservation, createQuote, createReservation, declineQuote, markQuoteSent, removeQuoteLine, scheduleTicket } from "@/lib/services/dispatch";
 import { addWorkOrderLine, cancelWorkOrder, completeWorkOrder, createServiceInterval, createWorkOrder, linkWorkOrderRental, removeWorkOrderLine, setIntervalActive, updateWorkOrder } from "@/lib/services/shop";
 import { fmtDate } from "@/lib/dates";
+import { disconnectQbo, kickQboSync, retryQboJob, runQboSyncNow, setQboMapping, updateQboSettings } from "@/lib/services/quickbooks";
 
 const str = (fd: FormData, k: string) => { const v = fd.get(k); return typeof v === "string" ? v : ""; };
 const bool = (fd: FormData, k: string) => fd.get(k) === "on" || fd.get(k) === "true";
@@ -216,10 +218,12 @@ export async function bulkApproveAction(fd: FormData) {
     const ids = await q(`SELECT id FROM invoices WHERE customer_id=$1 AND status='pending_review' AND period_start >= $2::date AND period_start < ($2::date + interval '1 month')`, [str(fd, "customer_id"), str(fd, "month")]);
     let ok = 0, blocked = 0;
     for (const { id } of ids) { try { await approveInvoice(u, id); ok++; } catch { blocked++; } }
+    after(kickQboSync);
     return `${ok} invoice(s) approved and finalized.${blocked ? ` ${blocked} still need attention (open them to see which checks failed).` : ""}`;
   });
 }
 const invAction = (fn: (u: SessionUser, id: string, fd: FormData) => Promise<unknown>, msg: string) => async (fd: FormData) => {
+  after(kickQboSync); // send anything this queued for QuickBooks once the page has responded
   await run(fd, `/invoices/${str(fd, "id")}`, async (u) => { const r: any = await fn(u, str(fd, "id"), fd); if (r?.id && r?.revision_no) return { to: `/invoices/${r.id}`, msg }; return typeof r?.invoice_number === "string" ? `${msg} Invoice number ${r.invoice_number}.` : msg; });
 };
 export async function refreshInvoiceAction(fd: FormData) { await invAction((u, id) => refreshInvoice(u, id), "Invoice recalculated from current rental and PO data.")(fd); }
@@ -596,4 +600,28 @@ export async function refreshSaleFeesAction(fd: FormData) {
     if (sale?.finalized_at) throw new Error("This sale is finalized; its fees can't change.");
     return "Fees and totals updated from the current fee setup.";
   });
+}
+
+// ───────── QuickBooks
+export async function qboSettingsAction(fd: FormData) {
+  await run(fd, "/quickbooks", async (u) => { await updateQboSettings(u, { enabled: bool(fd, "enabled"), sync_from: str(fd, "sync_from") }); return bool(fd, "enabled") ? "QuickBooks sync is on." : "QuickBooks sync settings saved. Sync is off."; });
+}
+export async function qboMappingAction(fd: FormData) {
+  await run(fd, "/quickbooks", async (u) => {
+    const [qbo_id, ...name] = str(fd, "qbo").split("|");
+    await setQboMapping(u, { kind: str(fd, "kind"), local_key: str(fd, "local_key"), qbo_id: qbo_id ?? "", qbo_name: name.join("|") });
+    return qbo_id ? "Match saved." : "Match removed.";
+  });
+}
+export async function qboDisconnectAction(fd: FormData) {
+  await run(fd, "/quickbooks", async (u) => { await disconnectQbo(u); return "QuickBooks disconnected and sync turned off. Nothing already in QuickBooks was changed."; });
+}
+export async function qboSyncNowAction(fd: FormData) {
+  await run(fd, "/quickbooks", async (u) => {
+    const r = await runQboSyncNow(u);
+    return `Sync finished: ${r.synced} sent, ${r.needs_attention} need attention, ${r.skipped} not sent, ${r.waiting} waiting.`;
+  });
+}
+export async function qboRetryAction(fd: FormData) {
+  await run(fd, "/quickbooks", async (u) => { await retryQboJob(u, str(fd, "job_id")); after(kickQboSync); return "Queued to try again."; });
 }
