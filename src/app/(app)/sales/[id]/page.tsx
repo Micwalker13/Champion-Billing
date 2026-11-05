@@ -4,8 +4,10 @@ import { can } from "@/lib/permissions";
 import { fmtUSD, dec } from "@/lib/money";
 import { fmtDate, todayCentral } from "@/lib/dates";
 import { Flash, StatusBadge } from "@/components/ui";
-import { saleDetail } from "@/lib/services/sales";
-import { finalizeSaleAction, salePaymentAction, voidSaleAction } from "../../../actions";
+import { saleDetail, saleFeeGaps } from "@/lib/services/sales";
+import { overridesFor } from "@/lib/services/fees";
+import { pctLabel } from "@/lib/fees";
+import { refreshSaleFeesAction, feeOverrideAction, finalizeSaleAction, removeFeeOverrideAction, salePaymentAction, voidSaleAction } from "../../../actions";
 
 export default async function SalePage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<Record<string, string>> }) {
   const user = await requireUser();
@@ -14,7 +16,10 @@ export default async function SalePage({ params, searchParams }: { params: Promi
   if (!/^\d+$/.test(id)) notFound();
   const d = await saleDetail(id);
   if (!d) notFound();
-  const { sale, payments } = d;
+  const { sale, payments, fees } = d;
+  const draft = sale.status === "draft";
+  const [gaps, overrides] = draft ? await Promise.all([saleFeeGaps(id), overridesFor({ saleId: id })]) : [[], []];
+  const canOverride = can(user, "override_fees");
   const back = `/sales/${id}`;
   const balance = dec(sale.total).sub(sale.amount_paid);
   const H = () => <><input type="hidden" name="sale_id" value={id} /><input type="hidden" name="back" value={back} /></>;
@@ -37,6 +42,7 @@ export default async function SalePage({ params, searchParams }: { params: Promi
             <dt>Hours at sale</dt><dd>{sale.hours_at_sale ?? "—"}</dd>
             <dt>Price</dt><dd>{fmtUSD(sale.price)}</dd>
             <dt>Freight</dt><dd>{fmtUSD(sale.freight)}</dd>
+            {fees.map((f: any) => <span key={f.id} style={{ display: "contents" }}><dt>{f.code}</dt><dd>{f.description}: {fmtUSD(f.amount)}{f.taxable ? "" : " (no sales tax)"}</dd></span>)}
             <dt>Sales tax</dt><dd>{sale.taxable ? `${taxPct}%: ${fmtUSD(sale.tax_amount)}` : "Exempt"}</dd>
             <dt>Total</dt><dd><b>{fmtUSD(sale.total)}</b></dd>
             <dt>Terms</dt><dd>{Number(sale.terms_days) === 0 ? "Due on receipt" : `Net ${sale.terms_days}`}</dd>
@@ -48,7 +54,23 @@ export default async function SalePage({ params, searchParams }: { params: Promi
           </dl>
         </div>
         <div className="card">
-          {sale.status === "draft" && <>
+          {draft && gaps.length > 0 && <>
+            <h2>Fees &amp; taxes on this sale</h2>
+            <table className="small"><tbody>{gaps.map((g: any) => {
+              const ov = (overrides as any[]).find((o) => String(o.fee_type_id) === String(g.id));
+              return <tr key={g.id}><td><span className="mono">{g.code}</span> {g.name}</td>
+                <td>{g.status === "billed" ? (ov ? <span className="badge b-accent">Override: {ov.percent ? pctLabel(ov.percent) : fmtUSD(ov.amount)}</span> : "Charged")
+                  : g.status === "no_rate" ? <span className="badge b-warn">No rate in effect, not charged</span> : g.status === "exempt" ? <span className="badge">Customer exempt</span> : g.status === "waived" ? <span className="badge b-accent">Waived: {ov?.reason}</span> : g.status}</td>
+                <td>{canOverride && g.allow_override && (ov
+                  ? <form action={removeFeeOverrideAction} className="inline"><input type="hidden" name="override_id" value={ov.id} /><input type="hidden" name="back" value={back} /><button className="btn-sm">Use standard rate</button></form>
+                  : <details><summary className="small">Override</summary><form action={feeOverrideAction}><H /><input type="hidden" name="fee_type_id" value={g.id} />
+                      <div className="row"><select name="mode" defaultValue="rate"><option value="rate">Different {g.calc_type === "percent" ? "percent" : "amount"}</option><option value="waive">Waive it</option></select>
+                        <input name="value" inputMode="decimal" style={{ width: 80 }} /></div>
+                      <input name="reason" required minLength={5} placeholder="Reason" /> <button className="btn-sm">Save</button></form></details>)}</td></tr>;
+            })}</tbody></table>
+            {can(user, "edit_records") && <form action={refreshSaleFeesAction} style={{ margin: "6px 0 12px" }}><H /><button className="btn-sm">Update fees and totals</button> <span className="small muted">Fees are also updated automatically when the sale is finalized.</span></form>}
+          </>}
+          {draft && <>
             <h2>Finalize</h2>
             <p className="small muted">Finalizing gives the sale the next invoice number, stores the PDF so it can never change, and marks the unit sold so it can&rsquo;t be rented. To change the price, void this draft and start again.</p>
             {can(user, "approve_invoice") ? <form action={finalizeSaleAction}><H /><button className="btn-primary">Finalize sale</button></form> : <p className="muted small">A billing manager finalizes sales.</p>}

@@ -20,6 +20,9 @@ import { issueCredit } from "@/lib/services/credits";
 import { emailCredit, emailInvoice, emailMonth, setInvoiceEmails } from "@/lib/services/email";
 import { saveUsage, setDamageWaiverWaived, updateUsageSettings } from "@/lib/services/usage";
 import { removeCoi, setRdwChoice, uploadCoi } from "@/lib/services/insurance";
+import { addExemption, addFeeAssignment, addFeeRate, createFeeType, endFeeRate, removeExemption, removeFeeAssignment, removeFeeOverride, setEquipmentClass, setFeeOverride, setFeeTypeActive, setUnitFee, updateFeeType } from "@/lib/services/fees";
+import { refreshSaleFees } from "@/lib/services/sales";
+import { tx } from "@/lib/db";
 import { acceptQuote, addQuoteLine, assignReservationUnit, cancelReservation, cancelTicket, completeTicket, convertReservation, createQuote, createReservation, declineQuote, markQuoteSent, removeQuoteLine, scheduleTicket } from "@/lib/services/dispatch";
 import { addWorkOrderLine, cancelWorkOrder, completeWorkOrder, createServiceInterval, createWorkOrder, linkWorkOrderRental, removeWorkOrderLine, setIntervalActive, updateWorkOrder } from "@/lib/services/shop";
 import { fmtDate } from "@/lib/dates";
@@ -521,4 +524,76 @@ export async function uploadCoiAction(fd: FormData) {
 }
 export async function removeCoiAction(fd: FormData) {
   await run(fd, "/customers", async (u) => { await removeCoi(u, str(fd, "coi_id"), str(fd, "reason")); return "Certificate removed. The damage waiver bills again for periods it no longer covers."; });
+}
+
+// ───────── Fees and taxes
+const feeFields = (fd: FormData) => ({ code: str(fd, "code"), name: str(fd, "name"), description: str(fd, "description"), category: str(fd, "category"), calc_type: str(fd, "calc_type"),
+  frequency: str(fd, "frequency"), applies_rentals: bool(fd, "applies_rentals"), applies_sales: bool(fd, "applies_sales"), taxable: bool(fd, "taxable"), allow_override: bool(fd, "allow_override"), gl_account: str(fd, "gl_account") });
+export async function createFeeTypeAction(fd: FormData) {
+  await run(fd, "/fees", async (u) => {
+    const rate = str(fd, "rate") ? { effective_from: str(fd, "effective_from"), value: str(fd, "rate"), note: str(fd, "rate_note") } : undefined;
+    const f = await createFeeType(u, feeFields(fd), rate);
+    return { to: `/fees#fee-${f.id}`, msg: `${f.name} created. Assign it to equipment classes, categories or single units so it applies.` };
+  });
+}
+export async function updateFeeTypeAction(fd: FormData) {
+  await run(fd, "/fees", async (u) => { await updateFeeType(u, str(fd, "fee_id"), feeFields(fd)); return "Fee saved."; });
+}
+export async function feeActiveAction(fd: FormData) {
+  await run(fd, "/fees", async (u) => { const on = str(fd, "active") === "true"; await setFeeTypeActive(u, str(fd, "fee_id"), on); return on ? "Fee turned on." : "Fee turned off. It no longer applies to new invoice calculations, quotes or sales."; });
+}
+export async function addFeeRateAction(fd: FormData) {
+  await run(fd, "/fees", async (u) => { await addFeeRate(u, str(fd, "fee_id"), { effective_from: str(fd, "effective_from"), value: str(fd, "rate"), note: str(fd, "rate_note") }); return "New rate saved. The previous rate ends the day before."; });
+}
+export async function endFeeRateAction(fd: FormData) {
+  await run(fd, "/fees", async (u) => { await endFeeRate(u, str(fd, "fee_id"), str(fd, "last_day")); return "Rate end date saved."; });
+}
+export async function addFeeAssignmentAction(fd: FormData) {
+  await run(fd, "/fees", async (u) => { await addFeeAssignment(u, str(fd, "fee_id"), { scope: str(fd, "scope"), value: str(fd, "value") }); return "Assignment added."; });
+}
+export async function removeFeeAssignmentAction(fd: FormData) {
+  await run(fd, "/fees", async (u) => { await removeFeeAssignment(u, str(fd, "assignment_id")); return "Assignment removed."; });
+}
+export async function unitFeeAction(fd: FormData) {
+  await run(fd, "/equipment", async (u) => {
+    const v = str(fd, "enabled");
+    await setUnitFee(u, str(fd, "equipment_id"), str(fd, "fee_id"), v === "reset" ? null : v === "true", str(fd, "reason"));
+    return v === "reset" ? "Unit switch cleared; its class and category decide." : v === "true" ? "Fee switched on for this unit." : "Fee switched off for this unit.";
+  });
+}
+export async function equipmentClassAction(fd: FormData) {
+  await run(fd, "/equipment", async (u) => { await setEquipmentClass(u, str(fd, "equipment_id"), str(fd, "equipment_class")); return "Equipment class saved."; });
+}
+export async function addExemptionAction(fd: FormData) {
+  await run(fd, "/customers", async (u) => {
+    await addExemption(u, str(fd, "customer_id"), { fee_type_id: str(fd, "fee_type_id"), reason: str(fd, "reason"), certificate_ref: str(fd, "certificate_ref"), effective_from: str(fd, "effective_from"), effective_to: str(fd, "effective_to") });
+    return "Exemption saved. Draft invoices pick it up when recalculated.";
+  });
+}
+export async function removeExemptionAction(fd: FormData) {
+  await run(fd, "/customers", async (u) => { await removeExemption(u, str(fd, "exemption_id"), str(fd, "reason")); return "Exemption removed."; });
+}
+export async function feeOverrideAction(fd: FormData) {
+  await run(fd, "/rentals", async (u) => {
+    const lineId = str(fd, "line_id") || undefined, saleId = str(fd, "sale_id") || undefined;
+    await setFeeOverride(u, { lineId, saleId }, { fee_type_id: str(fd, "fee_type_id"), mode: str(fd, "mode"), value: str(fd, "value"), reason: str(fd, "reason") });
+    if (saleId) await tx((db) => refreshSaleFees(db, saleId));
+    return "Fee override saved. Draft invoices pick it up when recalculated.";
+  });
+}
+export async function removeFeeOverrideAction(fd: FormData) {
+  await run(fd, "/rentals", async (u) => {
+    const r = await removeFeeOverride(u, str(fd, "override_id"));
+    if (r.sale_id) await tx((db) => refreshSaleFees(db, r.sale_id!));
+    return "Override removed; the standard rate applies again.";
+  });
+}
+export async function refreshSaleFeesAction(fd: FormData) {
+  await run(fd, "/sales", async (u) => {
+    requirePerm(u, "edit_records");
+    const id = str(fd, "sale_id");
+    const sale = await tx((db) => refreshSaleFees(db, id));
+    if (sale?.finalized_at) throw new Error("This sale is finalized; its fees can't change.");
+    return "Fees and totals updated from the current fee setup.";
+  });
 }

@@ -4,9 +4,10 @@ import { can } from "@/lib/permissions";
 import { one } from "@/lib/db";
 import { BILLING_METHOD_LABELS, PRORATION_LABELS } from "@/lib/billing";
 import { Flash } from "@/components/ui";
-import { rdwChoiceAction, uploadCoiAction, removeCoiAction, usageSettingsAction, approveProrationAction, setInvoiceEmailsAction, updateCustomerAction, updateProfileAction } from "../../../actions";
+import { addExemptionAction, removeExemptionAction, rdwChoiceAction, uploadCoiAction, removeCoiAction, usageSettingsAction, approveProrationAction, setInvoiceEmailsAction, updateCustomerAction, updateProfileAction } from "../../../actions";
 import { emailEnabled } from "@/lib/services/email";
 import { listCois } from "@/lib/services/insurance";
+import { listExemptions, loadFeeConfig } from "@/lib/services/fees";
 import { fmtDate, todayCentral } from "@/lib/dates";
 
 export default async function CustomerPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<Record<string, string>> }) {
@@ -18,7 +19,7 @@ export default async function CustomerPage({ params, searchParams }: { params: P
   if (!c) notFound();
   const p = await one(`SELECT p.*, u.name AS approver FROM customer_billing_profiles p LEFT JOIN users u ON u.id=p.proration_approved_by WHERE customer_id=$1`, [id]);
   const back = `/customers/${id}`;
-  const cois = await listCois(id);
+  const [cois, exemptions, feeCfg] = await Promise.all([listCois(id), listExemptions(id), loadFeeConfig()]);
   const today = todayCentral();
   const current = cois.find((x: any) => !x.removed_at && x.effective_on <= today && x.expires_on >= today);
   const editor = can(user, "edit_records");
@@ -90,6 +91,27 @@ export default async function CustomerPage({ params, searchParams }: { params: P
             <div className="field"><label>Certificate (PDF, PNG or JPG)</label><input type="file" name="certificate" accept="application/pdf,image/png,image/jpeg" required /></div>
             <button>Upload certificate</button>
           </form></details>}
+      </div>
+      <div className="card" id="exemptions">
+        <h2>Fee and tax exemptions</h2>
+        <p className="small muted">Use this when the customer doesn't owe a specific fee or tax, for example with an exemption certificate. The exemption applies to billing periods that start within its dates.</p>
+        {exemptions.length > 0 ? <table className="small"><thead><tr><th>Fee</th><th>Dates</th><th>Reason</th><th></th></tr></thead><tbody>
+          {exemptions.map((x: any) => <tr key={x.id} className={x.removed_at ? "muted" : ""}>
+            <td><span className="mono">{x.code}</span> {x.fee_name}</td>
+            <td>{fmtDate(x.effective_from)} to {x.effective_to ? fmtDate(x.effective_to) : "open"}</td>
+            <td>{x.reason}{x.certificate_ref ? ` (certificate ${x.certificate_ref})` : ""}<div className="muted">Added by {x.created_by_name}</div></td>
+            <td>{x.removed_at ? <>Removed: {x.removed_reason}</> : admin && <details><summary>Remove</summary><form action={removeExemptionAction}><input type="hidden" name="exemption_id" value={x.id} /><input type="hidden" name="back" value={`${back}#exemptions`} /><input name="reason" required placeholder="Why" /> <button>Remove</button></form></details>}</td>
+          </tr>)}</tbody></table> : <p className="small muted">No exemptions.</p>}
+        {admin && feeCfg.types.length > 0 && <details style={{ marginTop: 8 }}><summary>Add an exemption</summary>
+          <form action={addExemptionAction}><input type="hidden" name="customer_id" value={id} /><input type="hidden" name="back" value={`${back}#exemptions`} />
+            <div className="row">
+              <div className="field"><label>Fee or tax</label><select name="fee_type_id" required>{feeCfg.types.map((f) => <option key={f.id} value={f.id}>{f.code} · {f.name}</option>)}</select></div>
+              <div className="field"><label>From</label><input type="date" name="effective_from" required /></div>
+              <div className="field"><label>Through (optional)</label><input type="date" name="effective_to" /></div>
+              <div className="field"><label>Certificate number</label><input name="certificate_ref" /></div>
+            </div>
+            <div className="field"><label>Reason</label><input name="reason" required placeholder="e.g. Exemption certificate on file" /></div>
+            <button>Save exemption</button></form></details>}
       </div>
       <form className="card" action={usageSettingsAction}>
         <h2>Extra hours and add-on charges</h2><input type="hidden" name="customer_id" value={id} /><input type="hidden" name="back" value={back} />

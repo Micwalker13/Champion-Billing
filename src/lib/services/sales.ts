@@ -10,6 +10,7 @@ import { addDays, isIsoDate, todayCentral } from "../dates";
 import { normalizeUnit } from "../po";
 import { renderSalePdf } from "../pdf";
 import { logEvent, openRentalFor } from "./inventory";
+import { feesFor } from "./fees";
 
 const moneyStr = z.string().trim().regex(/^\d+(\.\d{1,2})?$/, "Enter an amount like 45000.00");
 
@@ -26,10 +27,42 @@ export const saleSchema = z.object({
   notes: z.string().trim().max(2000).optional().nullable().transform((v) => (v ? v : null)),
 });
 
-function amounts(price: string, freight: string, taxable: boolean, taxRate: string) {
-  const subtotal = dec(price).add(dec(freight));
-  const tax = taxable ? computeTax(subtotal, taxRate) : "0.00";
+function amounts(price: string, freight: string, taxable: boolean, taxRate: string, fees: Array<{ amount: string; taxable: boolean }> = []) {
+  const feeTotal = fees.reduce((t, f) => t.add(dec(f.amount)), new D(0));
+  const taxableFees = fees.filter((f) => f.taxable).reduce((t, f) => t.add(dec(f.amount)), new D(0));
+  const subtotal = dec(price).add(dec(freight)).add(feeTotal);
+  const tax = taxable ? computeTax(dec(price).add(dec(freight)).add(taxableFees), taxRate) : "0.00";
   return { subtotal: money(subtotal), tax_amount: tax, total: money(subtotal.add(tax)) };
+}
+
+/**
+ * Work out the unit's sale fees (HET, TERP, surcharges) as of `date` and store them on the draft sale,
+ * then update its totals. Percent fees are a percent of the sale price.
+ */
+export async function refreshSaleFees(db: Db, saleId: string, date = todayCentral()) {
+  const sale = await one(`SELECT * FROM equipment_sales WHERE id=$1`, [saleId], db);
+  if (!sale || sale.finalized_at) return sale;
+  const unit = await one(`SELECT id, equipment_class, category FROM equipment WHERE id=$1`, [sale.equipment_id], db);
+  const applied = await feesFor({ txn: "sale", equipment: unit, customerId: sale.customer_id, date, base: sale.price, firstPeriod: true, saleId }, db);
+  await db.query(`DELETE FROM sale_fees WHERE sale_id=$1`, [saleId]);
+  const billed: Array<{ amount: string; taxable: boolean }> = [];
+  for (const { fee, outcome } of applied) {
+    if (outcome.status !== "billed" || dec(outcome.amount).lte(0)) continue;
+    await db.query(`INSERT INTO sale_fees(sale_id,fee_type_id,fee_category,description,amount,taxable) VALUES ($1,$2,$3,$4,$5,$6)`,
+      [saleId, fee.id, fee.category, outcome.description, outcome.amount, fee.taxable]);
+    billed.push({ amount: outcome.amount, taxable: fee.taxable });
+  }
+  const a = amounts(sale.price, sale.freight, sale.taxable, sale.tax_rate, billed);
+  return one(`UPDATE equipment_sales SET subtotal=$2, tax_amount=$3, total=$4 WHERE id=$1 RETURNING *`, [saleId, a.subtotal, a.tax_amount, a.total], db);
+}
+
+/** Fees on a sale that apply but have no rate for the date, for the sale page. */
+export async function saleFeeGaps(saleId: string, db: Db = pool()) {
+  const sale = await one(`SELECT * FROM equipment_sales WHERE id=$1`, [saleId], db);
+  if (!sale || sale.finalized_at) return [];
+  const unit = await one(`SELECT id, equipment_class, category FROM equipment WHERE id=$1`, [sale.equipment_id], db);
+  const applied = await feesFor({ txn: "sale", equipment: unit, customerId: sale.customer_id, date: todayCentral(), base: sale.price, firstPeriod: true, saleId }, db);
+  return applied.map(({ fee, outcome }) => ({ id: fee.id, code: fee.code, name: fee.name, status: outcome.status, allow_override: fee.allow_override, calc_type: fee.calc_type }));
 }
 
 /** Start a sale as a draft. Nothing changes on the unit until the sale is finalized. */
@@ -48,8 +81,9 @@ export async function createSale(user: SessionUser, input: unknown) {
       `INSERT INTO equipment_sales(customer_id,equipment_id,price,freight,taxable,tax_rate,subtotal,tax_amount,total,terms_days,hours_at_sale,notes,created_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
       [customer.id, unit.id, money(s.price), money(s.freight), s.taxable, taxRate, a.subtotal, a.tax_amount, a.total, s.terms_days ?? customer.payment_terms_days ?? 30, s.hours_at_sale ?? unit.hour_meter, s.notes, user.id], db);
-    await audit(db, user.id, "create", "equipment_sale", row.id, null, { unit: unit.unit_number, customer: customer.name, total: a.total });
-    return row;
+    const withFees = await refreshSaleFees(db, row.id);
+    await audit(db, user.id, "create", "equipment_sale", row.id, null, { unit: unit.unit_number, customer: customer.name, total: withFees.total });
+    return withFees;
   });
 }
 
@@ -81,6 +115,8 @@ export async function finalizeSale(user: SessionUser, id: string) {
     if (await one(`SELECT 1 FROM invoices WHERE invoice_number=$1`, [number], db)) throw new AppError(`Invoice number ${number} is already used. Check the next invoice number in Settings.`);
     const customer = await one(`SELECT * FROM customers WHERE id=$1`, [sale.customer_id], db);
     const saleDate = todayCentral();
+    Object.assign(sale, await refreshSaleFees(db, id, saleDate));
+    sale.fees = await q(`SELECT description, amount, taxable, fee_category FROM sale_fees WHERE sale_id=$1 ORDER BY id`, [id], db);
     const snapshot = {
       company: { legal_name: s.legal_name, address_line1: s.address_line1, address_line2: s.address_line2, city_state_zip: s.city_state_zip, phone: s.phone, email: s.email, remit_to: s.remit_to, is_placeholder: s.is_placeholder },
       customer: { id: customer.id, code: customer.customer_code, name: customer.name, billing_address: customer.billing_address },
@@ -143,6 +179,7 @@ export async function salePdf(id: string, db: Db = pool()) {
   const company = await one(`SELECT * FROM company_settings WHERE id=1`, [], db);
   const customer = await one(`SELECT * FROM customers WHERE id=$1`, [sale.customer_id], db);
   const unit = await one(`SELECT * FROM equipment WHERE id=$1`, [sale.equipment_id], db);
+  sale.fees = await q(`SELECT description, amount, taxable, fee_category FROM sale_fees WHERE sale_id=$1 ORDER BY id`, [id], db);
   const pdf = Buffer.from(await renderSalePdf({ sale: { ...sale, snapshot: { company, customer: { ...customer, code: customer.customer_code }, equipment: unit } }, draft: true }));
   return { pdf, filename: `DRAFT-SALE-${sale.unit_number}.pdf`, finalized: false, sha256: createHash("sha256").update(pdf).digest("hex") };
 }
@@ -159,5 +196,6 @@ export async function saleDetail(id: string, db: Db = pool()) {
                           LEFT JOIN users uc ON uc.id=s.created_by LEFT JOIN users uf ON uf.id=s.finalized_by LEFT JOIN users uv ON uv.id=s.voided_by WHERE s.id=$1`, [id], db);
   if (!sale) return null;
   const payments = await q(`SELECT * FROM sale_payments WHERE sale_id=$1 ORDER BY paid_on, id`, [id], db);
-  return { sale, payments };
+  const fees = await q(`SELECT f.*, t.code FROM sale_fees f JOIN fee_types t ON t.id=f.fee_type_id WHERE f.sale_id=$1 ORDER BY f.id`, [id], db);
+  return { sale, payments, fees };
 }

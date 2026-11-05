@@ -57,6 +57,17 @@ const QUERIES: Record<string, { sql: string; params?: (sp: URLSearchParams) => u
           FROM rental_contract_lines l JOIN rental_contracts rc ON rc.id=l.contract_id JOIN customers c ON c.id=rc.customer_id JOIN equipment e ON e.id=l.equipment_id LEFT JOIN jobsites j ON j.id=rc.jobsite_id
           ORDER BY c.name, e.unit_number`,
   },
+  "fee-lines": {
+    sql: `SELECT 'invoice' AS source, i.invoice_number AS document, i.invoice_date AS date, c.name AS customer, i.snapshot->'equipment'->>'unit_number' AS unit,
+                 t.code AS fee_code, t.name AS fee_name, l.fee_category AS accounting_class, t.gl_account, l.description, l.amount, l.taxable, i.status
+            FROM invoice_lines l JOIN invoices i ON i.id=l.invoice_id JOIN customers c ON c.id=i.customer_id JOIN fee_types t ON t.id=l.fee_type_id
+           WHERE i.finalized_at IS NOT NULL
+          UNION ALL
+          SELECT 'sale', s.sale_number, s.sale_date, c.name, e.unit_number, t.code, t.name, f.fee_category, t.gl_account, f.description, f.amount, f.taxable, s.status
+            FROM sale_fees f JOIN equipment_sales s ON s.id=f.sale_id JOIN customers c ON c.id=s.customer_id JOIN equipment e ON e.id=s.equipment_id JOIN fee_types t ON t.id=f.fee_type_id
+           WHERE s.finalized_at IS NOT NULL
+          ORDER BY date, document`,
+  },
   audit: { sql: `SELECT a.id, a.at, u.email AS user_email, a.action, a.entity, a.entity_id, a.note, a.before, a.after FROM audit_log a LEFT JOIN users u ON u.id=a.user_id ORDER BY a.id` },
 };
 

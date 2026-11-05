@@ -13,6 +13,7 @@ import { normalizeUnit } from "../po";
 import { renderQuotePdf, renderTicketPdf } from "../pdf";
 import { logEvent } from "./inventory";
 import { createRentalInTx, rentalSchema } from "./records";
+import { feesFor, loadFeeConfig } from "./fees";
 
 const optText = z.string().trim().max(2000).optional().nullable().transform((v) => (v ? v : null));
 const optHours = z.union([z.literal(""), z.string().trim().regex(/^\d{1,7}(\.\d)?$/, "Enter hours like 1234.5")]).optional().nullable().transform((v) => (v ? v : null));
@@ -252,6 +253,18 @@ export async function declineQuote(user: SessionUser, id: string, note: string) 
   });
 }
 
+/** Fees and taxes each quote line's unit (or category) would carry, per billing cycle, as of its start date. */
+export async function quoteLineFees(customerId: string, lines: any[], db: Db = pool()) {
+  const config = await loadFeeConfig(db);
+  const out: Record<string, Array<{ description: string; amount: string; category: string }>> = {};
+  for (const l of lines) {
+    const unit = l.equipment_id ? await one(`SELECT id, equipment_class, category FROM equipment WHERE id=$1`, [l.equipment_id], db) : { id: "0", equipment_class: null, category: l.category };
+    const applied = await feesFor({ txn: "rental", equipment: unit, customerId, date: l.start_date, base: l.rate_amount, firstPeriod: true, config }, db);
+    out[l.id] = applied.filter((a) => a.outcome.status === "billed").map((a) => ({ description: (a.outcome as any).description, amount: (a.outcome as any).amount, category: a.fee.category }));
+  }
+  return out;
+}
+
 export async function quotePdf(id: string, db: Db = pool()) {
   const qt = await one(`SELECT * FROM quotes WHERE id=$1`, [id], db);
   if (!qt) throw new AppError("Quote not found", "not_found");
@@ -260,7 +273,8 @@ export async function quotePdf(id: string, db: Db = pool()) {
     one(`SELECT * FROM company_settings WHERE id=1`, [], db),
     one(`SELECT * FROM customers WHERE id=$1`, [qt.customer_id], db),
   ]);
-  return { pdf: Buffer.from(await renderQuotePdf(qt, lines, company, customer)), filename: `${qt.quote_number}.pdf` };
+  const fees = await quoteLineFees(qt.customer_id, lines, db);
+  return { pdf: Buffer.from(await renderQuotePdf(qt, lines.map((l) => ({ ...l, fees: fees[l.id] ?? [] })), company, customer)), filename: `${qt.quote_number}.pdf` };
 }
 
 export async function listQuotes(db: Db = pool()) {
@@ -272,7 +286,8 @@ export async function quoteDetail(id: string, db: Db = pool()) {
   if (!qt) return null;
   const lines = await q(`SELECT l.*, e.unit_number FROM quote_lines l LEFT JOIN equipment e ON e.id=l.equipment_id WHERE l.quote_id=$1 ORDER BY l.id`, [id], db);
   const reservations = await q(`SELECT r.*, e.unit_number FROM reservations r LEFT JOIN equipment e ON e.id=r.equipment_id WHERE r.quote_line_id = ANY($1) ORDER BY r.id`, [lines.map((l) => l.id)], db);
-  return { qt, lines, reservations };
+  const fees = await quoteLineFees(qt.customer_id, lines, db);
+  return { qt, lines, reservations, fees };
 }
 
 // ───────────────────────── Reservations ─────────────────────────

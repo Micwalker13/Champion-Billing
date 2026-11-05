@@ -8,7 +8,10 @@ import { RATE_BASIS_LABELS } from "@/lib/billing";
 import { DueBadge, Flash, RentalBadge, StatusBadge, UnitStatus, WoStatus, Empty } from "@/components/ui";
 import { WO_KIND_LABELS, listWorkOrders, serviceDue } from "@/lib/services/shop";
 import { EVENT_LABELS, UNIT_STATUS_LABELS, listYards, unitDetail } from "@/lib/services/inventory";
-import { createIntervalAction, createSaleAction, createWorkOrderAction, intervalActiveAction, updateUnitAction } from "../../../actions";
+import { createIntervalAction, createSaleAction, createWorkOrderAction, equipmentClassAction, intervalActiveAction, unitFeeAction, updateUnitAction } from "../../../actions";
+import { equipmentClasses, loadFeeConfig, unitFeeSettings } from "@/lib/services/fees";
+import { FEE_CATEGORY_LABELS, feeReach, pctLabel, rateOn } from "@/lib/fees";
+import { todayCentral } from "@/lib/dates";
 
 export default async function UnitPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<Record<string, string>> }) {
   const user = await requireUser();
@@ -19,6 +22,10 @@ export default async function UnitPage({ params, searchParams }: { params: Promi
   if (!d) notFound();
   const { unit, open, events, rentals, sale } = d;
   const [yards, customers, services, wos] = await Promise.all([listYards(), q(`SELECT id, name FROM customers WHERE active ORDER BY name`), serviceDue({ equipmentId: id }), listWorkOrders({ status: "all", unit: unit.unit_number })]);
+  const [feeCfg, feeSettings, classes] = await Promise.all([loadFeeConfig(), unitFeeSettings(id), equipmentClasses()]);
+  const feeAdmin = can(user, "manage_fees");
+  const today = todayCentral();
+  const VIA: Record<string, string> = { unit_on: "Switched on for this unit", unit_off: "Switched off for this unit", class: `From its class (${unit.equipment_class})`, category: `From its category (${unit.category})`, all: "Applies to all equipment", none: "Doesn't apply" };
   const myWos = wos.filter((w: any) => String(w.equipment_id) === String(id));
   const where = open ? "on_rent" : unit.status;
   const back = `/equipment/${id}`;
@@ -87,6 +94,35 @@ export default async function UnitPage({ params, searchParams }: { params: Promi
           </form>
         </details>)}
 
+      <div className="card" id="fees">
+        <h2>Applicable fees &amp; taxes</h2>
+        <form action={equipmentClassAction} className="row" style={{ alignItems: "flex-end" }}><input type="hidden" name="equipment_id" value={id} /><input type="hidden" name="back" value={`${back}#fees`} />
+          <div className="field"><label>Equipment class</label><input name="equipment_class" defaultValue={unit.equipment_class ?? ""} list="eq-classes" disabled={!can(user, "edit_records")} placeholder="e.g. Excavator 20-30 ton" /></div>
+          <div className="field"><label>Product category</label><input value={unit.category ?? "Not set"} disabled readOnly /></div>
+          {can(user, "edit_records") && <button className="btn-sm">Save class</button>}
+          <datalist id="eq-classes">{classes.map((c) => <option key={c.v} value={c.v} />)}</datalist>
+        </form>
+        {feeCfg.types.filter((f) => f.active).length === 0 ? <Empty>No fees or taxes are set up yet. Add them under <a href="/fees">Fees &amp; taxes</a>.</Empty> :
+        <div className="table-wrap"><table><thead><tr><th>Fee</th><th>Rate today</th><th>Status on this unit</th><th></th></tr></thead><tbody>
+          {feeCfg.types.filter((f) => f.active).map((f) => {
+            const reach = feeReach(f, unit, feeCfg.assignments, feeSettings);
+            const r = rateOn(feeCfg.rates, f.id, today);
+            const setting = feeSettings.find((x) => String(x.fee_type_id) === String(f.id));
+            const H = () => <><input type="hidden" name="equipment_id" value={id} /><input type="hidden" name="fee_id" value={f.id} /><input type="hidden" name="back" value={`${back}#fees`} /></>;
+            return <tr key={f.id}>
+              <td><span className="mono">{f.code}</span> {f.name}<div className="muted small">{FEE_CATEGORY_LABELS[f.category]}{f.applies_rentals && f.applies_sales ? " · rentals and sales" : f.applies_sales ? " · sales" : " · rentals"}</div></td>
+              <td>{r ? (r.percent ? pctLabel(r.percent) : fmtUSD(r.amount)) : <span className="badge b-warn">No rate</span>}</td>
+              <td><span className={`badge ${reach.applies ? "b-ok" : ""}`}>{reach.applies ? "Applies" : "Off"}</span> <span className="small muted">{VIA[reach.via]}{setting?.reason ? `: ${setting.reason}` : ""}</span></td>
+              <td>{feeAdmin && <div className="row">
+                {!(setting?.enabled === true) && <form action={unitFeeAction} className="inline"><H /><input type="hidden" name="enabled" value="true" /><button className="btn-sm">Turn on</button></form>}
+                {!(setting?.enabled === false) && <details><summary className="small">Turn off</summary><form action={unitFeeAction}><H /><input type="hidden" name="enabled" value="false" /><input name="reason" required minLength={3} placeholder="Why (e.g. not diesel powered)" /> <button className="btn-sm">Turn off</button></form></details>}
+                {setting && <form action={unitFeeAction} className="inline"><H /><input type="hidden" name="enabled" value="reset" /><button className="btn-sm">Use class and category</button></form>}
+              </div>}</td>
+            </tr>;
+          })}
+        </tbody></table></div>}
+        <p className="small muted">A fee applies when it is assigned to this unit's class or category, or switched on here. Switching it off here wins over the class and category. Changes apply to invoices calculated afterwards; finalized invoices never change.</p>
+      </div>
       <div className="card">
         <h2>Service and shop</h2>
         <div className="table-wrap"><table>

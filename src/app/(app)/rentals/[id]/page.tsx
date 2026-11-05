@@ -13,6 +13,8 @@ import { Flash, RentalBadge, StatusBadge, Empty } from "@/components/ui";
 import { scheduleTicketAction, damageWaiverAction, assignPoAction, changeLineStatusAction, exchangeUnitAction, generateInvoiceAction, removePoAction, updateTermsAction, uploadDocumentAction } from "../../../actions";
 import { availableUnits, exchangesForLine, listYards } from "@/lib/services/inventory";
 import { TICKET_STATUS_LABELS, listTickets } from "@/lib/services/dispatch";
+import { FEE_CATEGORY_LABELS, applicableFees, isExempt, pctLabel, rateOn } from "@/lib/fees";
+import { feeOverrideAction, removeFeeOverrideAction } from "../../../actions";
 
 export default async function RentalPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<Record<string, string>> }) {
   const user = await requireUser();
@@ -33,6 +35,10 @@ export default async function RentalPage({ params, searchParams }: { params: Pro
   const thisMonth = monthStart(todayCentral());
   const monthOptions = Array.from({ length: 8 }, (_, i) => addMonths(thisMonth, i - 3)).filter((m) => addMonths(m, 1) > line.billing_start_date);
   const last = lastBillableDay(ctx.window);
+  const fs = ctx.feeSetup!;
+  const today = todayCentral();
+  const unitFees = applicableFees(fs.config.types, "rental", equipment, fs.config.assignments, fs.unitSettings[String(equipment.id)] ?? []);
+  const canOverride = can(user, "override_fees");
   const H = ({ children }: { children: React.ReactNode }) => <><input type="hidden" name="line_id" value={id} /><input type="hidden" name="back" value={back} />{children}</>;
   const MonthSelect = ({ name = "period" }: { name?: string }) => <select name={name} defaultValue={thisMonth}>{monthOptions.map((m) => <option key={m} value={m}>{monthLabel(m)}</option>)}</select>;
 
@@ -68,6 +74,30 @@ export default async function RentalPage({ params, searchParams }: { params: Pro
             <dt>Payment terms</dt><dd>{contract.payment_terms_days ? `Net ${contract.payment_terms_days}` : profile.payment_terms_label}</dd>
             <dt>Notes</dt><dd style={{ whiteSpace: "pre-line" }}>{contract.internal_notes ?? "—"}</dd>
           </dl>
+        </div>
+        <div className="card" id="fees">
+          <h2>Fees &amp; taxes on this rental</h2>
+          {unitFees.length === 0 ? <p className="muted small">No equipment fees or taxes apply to unit {equipment.unit_number}. They are set on the <a href={`/equipment/${equipment.id}#fees`}>equipment page</a>.</p> :
+          <table className="small"><thead><tr><th>Fee</th><th>Rate</th><th></th></tr></thead><tbody>
+            {unitFees.map((f) => {
+              const r = rateOn(fs.config.rates, f.id, today);
+              const ov = (fs.overrides as any[]).find((o) => String(o.fee_type_id) === String(f.id));
+              const exempt = isExempt(fs.exemptions, f.id, today);
+              return <tr key={f.id}>
+                <td><span className="mono">{f.code}</span> {f.name}<div className="muted">{FEE_CATEGORY_LABELS[f.category]}{f.frequency === "one_time" ? ", first invoice only" : ", every billing cycle"}</div></td>
+                <td>{exempt ? <span className="badge">Customer exempt</span>
+                  : ov ? <><span className="badge b-accent">{ov.waived ? "Waived" : ov.percent ? pctLabel(ov.percent) : fmtUSD(ov.amount)}</span><div className="muted">Override: {ov.reason}</div></>
+                  : r ? (r.percent ? `${pctLabel(r.percent)} of rental` : fmtUSD(r.amount)) : <span className="badge b-warn">No rate</span>}</td>
+                <td>{canOverride && f.allow_override && (ov
+                  ? <form action={removeFeeOverrideAction} className="inline"><input type="hidden" name="override_id" value={ov.id} /><input type="hidden" name="back" value={`${back}#fees`} /><button className="btn-sm">Use standard rate</button></form>
+                  : <details><summary className="small">Override</summary><form action={feeOverrideAction}><input type="hidden" name="line_id" value={id} /><input type="hidden" name="fee_type_id" value={f.id} /><input type="hidden" name="back" value={`${back}#fees`} />
+                      <div className="row"><select name="mode" defaultValue="rate"><option value="rate">Different {f.calc_type === "percent" ? "percent" : "amount"}</option><option value="waive">Waive it</option></select>
+                        <input name="value" inputMode="decimal" placeholder={f.calc_type === "percent" ? "%" : "$"} style={{ width: 80 }} /></div>
+                      <input name="reason" required minLength={5} placeholder="Reason" /> <button className="btn-sm">Save</button></form></details>)}</td>
+              </tr>;
+            })}
+          </tbody></table>}
+          <p className="small muted">Each fee is its own line on every invoice, worked out for that billing cycle.</p>
         </div>
         <div className="card">
           <h2>Assign a monthly PO</h2>
