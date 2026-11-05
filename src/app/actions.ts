@@ -27,6 +27,7 @@ import { tx } from "@/lib/db";
 import { acceptQuote, addQuoteLine, assignReservationUnit, cancelReservation, cancelTicket, completeTicket, convertReservation, createQuote, createReservation, declineQuote, markQuoteSent, removeQuoteLine, scheduleTicket } from "@/lib/services/dispatch";
 import { addWorkOrderLine, cancelWorkOrder, completeWorkOrder, createServiceInterval, createWorkOrder, linkWorkOrderRental, removeWorkOrderLine, setIntervalActive, updateWorkOrder } from "@/lib/services/shop";
 import { fmtDate } from "@/lib/dates";
+import { addReRent, addReRentBill, returnToVendor, voidReRentBill } from "@/lib/services/rerents";
 import { disconnectQbo, kickQboSync, retryQboJob, runQboSyncNow, setQboMapping, updateQboSettings } from "@/lib/services/quickbooks";
 
 const str = (fd: FormData, k: string) => { const v = fd.get(k); return typeof v === "string" ? v : ""; };
@@ -624,4 +625,25 @@ export async function qboSyncNowAction(fd: FormData) {
 }
 export async function qboRetryAction(fd: FormData) {
   await run(fd, "/quickbooks", async (u) => { await retryQboJob(u, str(fd, "job_id")); after(kickQboSync); return "Queued to try again."; });
+}
+
+// ───────── Re-rents
+export async function addReRentAction(fd: FormData) {
+  await run(fd, "/rerents", async (u) => {
+    const keys = ["vendor_name", "unit_number", "description", "category", "make", "model", "serial_number", "vendor_unit", "vendor_agreement", "vendor_po", "cost_amount", "cost_basis", "received_date", "yard_id", "notes"];
+    const r = await addReRent(u, Object.fromEntries(keys.map((k) => [k, str(fd, k)])));
+    return `Re-rent unit ${r.unit_number} added. It can now go on rent like any other unit.`;
+  });
+}
+export async function addReRentBillAction(fd: FormData) {
+  await run(fd, "/rerents", async (u) => {
+    await addReRentBill(u, str(fd, "re_rent_id"), { vendor_invoice: str(fd, "vendor_invoice"), bill_date: str(fd, "bill_date"), period_start: str(fd, "period_start"), period_end: str(fd, "period_end"), amount: str(fd, "amount"), notes: str(fd, "notes") });
+    return "Supplier bill recorded.";
+  });
+}
+export async function voidReRentBillAction(fd: FormData) {
+  await run(fd, "/rerents", async (u) => { await voidReRentBill(u, str(fd, "bill_id"), str(fd, "reason")); return "Supplier bill voided."; });
+}
+export async function returnToVendorAction(fd: FormData) {
+  await run(fd, "/rerents", async (u) => { await returnToVendor(u, str(fd, "re_rent_id"), str(fd, "returned_date")); return "Marked as returned to the supplier."; });
 }

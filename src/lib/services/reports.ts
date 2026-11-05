@@ -183,7 +183,7 @@ export async function utilization(month: string) {
   }
   const rows = units
     .map((u) => { const st = stats.get(String(u.id))!; return { ...u, days_on_rent: st.days, time_pct: Math.round((st.days / monthDays) * 100), revenue: cents(st.revenue).toFixed(2) }; })
-    .filter((r) => r.days_on_rent > 0 || !["sold", "retired"].includes(r.status));
+    .filter((r) => r.days_on_rent > 0 || !["sold", "retired", "returned_to_vendor"].includes(r.status));
   const unitDays = rows.length * monthDays;
   const onRentDays = rows.reduce((s, r) => s + r.days_on_rent, 0);
   const revenue = rows.reduce((s, r) => s.add(r.revenue), new D(0));
