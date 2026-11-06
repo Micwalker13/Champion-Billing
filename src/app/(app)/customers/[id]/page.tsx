@@ -1,12 +1,14 @@
 import { notFound } from "next/navigation";
 import { requireUser } from "@/lib/session";
 import { can } from "@/lib/permissions";
-import { one } from "@/lib/db";
+import { one, q } from "@/lib/db";
 import { BILLING_METHOD_LABELS, PRORATION_LABELS } from "@/lib/billing";
 import { Flash } from "@/components/ui";
 import { addExemptionAction, removeExemptionAction, rdwChoiceAction, uploadCoiAction, removeCoiAction, usageSettingsAction, approveProrationAction, setInvoiceEmailsAction, updateCustomerAction, updateProfileAction } from "../../../actions";
 import { emailEnabled } from "@/lib/services/email";
 import { listCois } from "@/lib/services/insurance";
+import { TAX_EXEMPT_REASONS, listTaxExemptions } from "@/lib/services/tax-exempt";
+import { addTaxExemptionAction, removeTaxExemptionAction } from "../../../actions";
 import { listExemptions, loadFeeConfig } from "@/lib/services/fees";
 import { fmtDate, todayCentral } from "@/lib/dates";
 
@@ -19,7 +21,10 @@ export default async function CustomerPage({ params, searchParams }: { params: P
   if (!c) notFound();
   const p = await one(`SELECT p.*, u.name AS approver FROM customer_billing_profiles p LEFT JOIN users u ON u.id=p.proration_approved_by WHERE customer_id=$1`, [id]);
   const back = `/customers/${id}`;
-  const [cois, exemptions, feeCfg] = await Promise.all([listCois(id), listExemptions(id), loadFeeConfig()]);
+  const [cois, exemptions, feeCfg, taxEx, contracts] = await Promise.all([listCois(id), listExemptions(id), loadFeeConfig(), listTaxExemptions(id),
+    q(`SELECT id, contract_number FROM rental_contracts WHERE customer_id=$1 ORDER BY id DESC LIMIT 200`, [id])]);
+  const taxAdmin = can(user, "manage_tax_exempt");
+  const taxNow = taxEx.find((x: any) => !x.removed_at && !x.contract_id && x.effective_from <= todayCentral() && (!x.effective_to || x.effective_to >= todayCentral()));
   const today = todayCentral();
   const current = cois.find((x: any) => !x.removed_at && x.effective_on <= today && x.expires_on >= today);
   const editor = can(user, "edit_records");
@@ -92,9 +97,34 @@ export default async function CustomerPage({ params, searchParams }: { params: P
             <button>Upload certificate</button>
           </form></details>}
       </div>
+      <div className="card" id="sales-tax">
+        <h2>Sales tax exemption {taxNow && <span className="badge b-ok">Exempt now: {TAX_EXEMPT_REASONS[taxNow.reason]}</span>}</h2>
+        <p className="small muted">Keep the customer&apos;s exemption certificate here: agricultural (ag/timber number), resale, or interstate. While one covers the start of a billing period, that invoice charges no sales tax and says why. It can cover the whole customer or just one rental contract (common for interstate). Equipment sales dated within a customer-wide certificate aren&apos;t taxed either. Finished invoices never change; drafts pick it up when recalculated.</p>
+        {taxEx.length > 0 ? <table className="small"><thead><tr><th>Type</th><th>Certificate</th><th>Covers</th><th>Dates</th><th></th></tr></thead><tbody>
+          {taxEx.map((x: any) => <tr key={x.id} className={x.removed_at ? "muted" : ""}>
+            <td>{TAX_EXEMPT_REASONS[x.reason]}</td>
+            <td>{x.certificate_number ?? "—"}{x.file_name && <> · <a href={`/api/tax-exemptions/${x.id}`} target="_blank" rel="noopener">{x.file_name}</a></>}{x.notes && <div className="muted">{x.notes}</div>}</td>
+            <td>{x.contract_number ? `Contract ${x.contract_number}` : "All rentals and sales"}</td>
+            <td>{fmtDate(x.effective_from)} to {x.effective_to ? fmtDate(x.effective_to) : "open"}</td>
+            <td>{x.removed_at ? <>Removed: {x.removed_reason}</> : taxAdmin && <details><summary>Remove</summary><form action={removeTaxExemptionAction}><input type="hidden" name="exemption_id" value={x.id} /><input type="hidden" name="back" value={`${back}#sales-tax`} /><input name="reason" required placeholder="Why" /> <button>Remove</button></form></details>}</td>
+          </tr>)}</tbody></table> : <p className="small muted">No sales tax exemption. Invoices charge the customer&apos;s sales tax rate.</p>}
+        {taxAdmin ? <details style={{ marginTop: 8 }}><summary>Add a sales tax exemption</summary>
+          <form action={addTaxExemptionAction} encType="multipart/form-data"><input type="hidden" name="customer_id" value={id} /><input type="hidden" name="back" value={`${back}#sales-tax`} />
+            <div className="grid g3">
+              <div className="field"><label>Type</label><select name="reason" required>{Object.entries(TAX_EXEMPT_REASONS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></div>
+              <div className="field"><label>Certificate / permit / ag number</label><input name="certificate_number" maxLength={100} /></div>
+              <div className="field"><label>Applies to</label><select name="contract_id" defaultValue=""><option value="">All rentals and sales</option>{contracts.map((c: any) => <option key={c.id} value={c.id}>Contract {c.contract_number} only</option>)}</select></div>
+              <div className="field"><label>From</label><input type="date" name="effective_from" required defaultValue={todayCentral()} /></div>
+              <div className="field"><label>Through (optional)</label><input type="date" name="effective_to" /></div>
+              <div className="field"><label>Certificate file (PDF, PNG or JPG)</label><input type="file" name="certificate" accept="application/pdf,image/png,image/jpeg" /></div>
+            </div>
+            <div className="field"><label>Notes</label><input name="notes" maxLength={500} /></div>
+            <button>Save exemption</button></form></details>
+          : <p className="small muted">A billing manager or administrator adds exemptions.</p>}
+      </div>
       <div className="card" id="exemptions">
-        <h2>Fee and tax exemptions</h2>
-        <p className="small muted">Use this when the customer doesn't owe a specific fee or tax, for example with an exemption certificate. The exemption applies to billing periods that start within its dates.</p>
+        <h2>Equipment fee exemptions (HET, TERP, surcharges)</h2>
+        <p className="small muted">Use this when the customer doesn't owe a specific equipment fee. For sales tax, use Sales tax exemption above. The exemption applies to billing periods that start within its dates.</p>
         {exemptions.length > 0 ? <table className="small"><thead><tr><th>Fee</th><th>Dates</th><th>Reason</th><th></th></tr></thead><tbody>
           {exemptions.map((x: any) => <tr key={x.id} className={x.removed_at ? "muted" : ""}>
             <td><span className="mono">{x.code}</span> {x.fee_name}</td>

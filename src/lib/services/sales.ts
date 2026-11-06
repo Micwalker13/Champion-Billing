@@ -3,6 +3,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { AppError, Db, audit, one, pool, q, tx } from "../db";
+import { activeTaxExemptions, exemptionLabel, taxExemptionFor } from "./tax-exempt";
 import { SessionUser, requirePerm } from "../permissions";
 import { computeTax } from "../billing";
 import { D, dec, money } from "../money";
@@ -75,6 +76,9 @@ export async function createSale(user: SessionUser, input: unknown) {
     const unit = await one(`SELECT * FROM equipment WHERE unit_number=$1 FOR UPDATE`, [s.unit_number], db);
     if (!unit) throw new AppError(`Unit ${s.unit_number} is not in the equipment list.`);
     await assertSellable(db, unit);
+    // A customer-wide sales tax exemption certificate (ag, resale) covering today means no sales tax.
+    const exempt = taxExemptionFor(await activeTaxExemptions(customer.id, db), null, todayCentral());
+    if (exempt) { s.taxable = false; s.notes = [s.notes, `Sales tax exempt: ${exemptionLabel(exempt)}.`].filter(Boolean).join(" "); }
     const taxRate = s.tax_percent ? new D(s.tax_percent).div(100).toFixed(5) : dec(customer.tax_rate).toFixed(5);
     const a = amounts(s.price, s.freight, s.taxable, taxRate);
     const row = await one(

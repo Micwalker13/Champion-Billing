@@ -2,6 +2,7 @@ import { maxUploadMb } from "../limits";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { AppError, Db, audit, one, pool, q, tx } from "../db";
+import { TaxExemption, activeTaxExemptions } from "./tax-exempt";
 import { SessionUser, requirePerm } from "../permissions";
 import { BillingMethod, LineWindow, ProrationPolicy, RateBasis } from "../billing";
 import { normalizeUnit } from "../po";
@@ -271,6 +272,8 @@ export interface LineContext {
   line: any; contract: any; customer: any; profile: any; equipment: any; jobsite: any | null; fees: any[];
   /** The customer's insurance certificates that haven't been removed (newest expiry first). */
   cois?: Coi[];
+  /** The customer's sales tax exemption certificates (agricultural, resale, interstate). */
+  taxExemptions?: TaxExemption[];
   /** Fee and tax setup, plus this customer's exemptions and this rental's overrides. Unit switches are keyed by equipment id. */
   feeSetup?: { config: FeeConfig; unitSettings: Record<string, UnitFeeSetting[]>; exemptions: FeeExemption[]; overrides: FeeOverride[] };
   method: BillingMethod; rateBasis: RateBasis; window: LineWindow;
@@ -308,6 +311,7 @@ export async function loadLineContext(lineId: string, db: Db = pool()): Promise<
   const jobsite = contract.jobsite_id ? await one(`SELECT * FROM jobsites WHERE id=$1`, [contract.jobsite_id], db) : null;
   const fees = await q(`SELECT * FROM contract_line_fees WHERE contract_line_id=$1 ORDER BY id`, [lineId], db);
   const cois = await activeCois(customer.id, db);
+  const taxExemptions = await activeTaxExemptions(customer.id, db);
   const [feeConfig, exemptions, overrides] = await Promise.all([loadFeeConfig(db), customerExemptions(customer.id, db), overridesFor({ lineId }, db)]);
   const method: BillingMethod = contract.billing_method || profile.billing_method;
   const exRows = await q(`SELECT id, exchange_date, reason, out_equipment_id, in_equipment_id FROM equipment_exchanges WHERE contract_line_id=$1 ORDER BY exchange_date, id`, [lineId], db);
@@ -317,7 +321,7 @@ export async function loadLineContext(lineId: string, db: Db = pool()): Promise<
   for (const id of new Set([String(line.equipment_id), ...exRows.flatMap((e) => [String(e.out_equipment_id), String(e.in_equipment_id)])])) unitSettings[id] = await unitFeeSettings(id, db);
   const exchanges = exRows.map((e) => ({ id: e.id, exchange_date: e.exchange_date, reason: e.reason, out: byId.get(String(e.out_equipment_id)), in: byId.get(String(e.in_equipment_id)) }));
   return {
-    line, contract, customer, profile, equipment, jobsite, fees, cois, method,
+    line, contract, customer, profile, equipment, jobsite, fees, cois, taxExemptions, method,
     feeSetup: { config: feeConfig, unitSettings, exemptions, overrides }, rateBasis: line.rate_basis, exchanges,
     window: { method, onRentDate: line.on_rent_date, billingStartDate: line.billing_start_date, offRentDate: line.off_rent_date, billOffRentDay: profile.bill_off_rent_day },
   };

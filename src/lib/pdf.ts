@@ -131,7 +131,7 @@ export async function renderInvoicePdf({ invoice, lines, attachments, draft }: R
   const taxPct = (Number(invoice.tax_rate) * 100).toFixed(3).replace(/\.?0+$/, "");
   const totals: Array<[string, string, boolean]> = [
     ["Rental & charges subtotal", fmtUSD(invoice.subtotal), false],
-    [`Sales tax (${taxPct}% on ${fmtUSD(invoice.taxable_amount)})`, fmtUSD(invoice.tax_amount), false],
+    [invoice.snapshot?.tax?.exempt ? `Sales tax exempt (${invoice.snapshot.tax.exempt})` : `Sales tax (${taxPct}% on ${fmtUSD(invoice.taxable_amount)})`, fmtUSD(invoice.tax_amount), false],
     ["TOTAL AMOUNT DUE", fmtUSD(invoice.total), true],
   ];
   totals.forEach(([k, v, b], i) => {
