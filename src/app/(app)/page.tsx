@@ -1,6 +1,7 @@
 import { requireUser } from "@/lib/session";
 import { overview } from "@/lib/services/dashboard";
 import { coiAlerts } from "@/lib/services/insurance";
+import { purchaseOptionsReady } from "@/lib/services/rent-to-own";
 import { addMonths, fmtDate, monthLabel, monthStart, todayCentral } from "@/lib/dates";
 import { fmtUSD } from "@/lib/money";
 import { Flash, Kpi, StatusBadge, Empty } from "@/components/ui";
@@ -9,7 +10,7 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
   await requireUser();
   const sp = await searchParams;
   const month = /^\d{4}-\d{2}$/.test(sp.month ?? "") ? `${sp.month}-01` : monthStart(todayCentral());
-  const [o, cois] = await Promise.all([overview(month), coiAlerts(30)]);
+  const [o, cois, rto] = await Promise.all([overview(month), coiAlerts(30), purchaseOptionsReady()]);
   const ym = month.slice(0, 7);
   return (
     <>
@@ -22,6 +23,7 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
         </div>
       </div>
       <Flash sp={sp} />
+      {rto.length > 0 && <div className="alert alert-warn">Rent-to-own ready to sell: {rto.map((r: any, i: number) => <span key={r.contract_line_id}>{i ? ", " : ""}<a href={`/rentals/${r.contract_line_id}#rto`}>{r.unit_number}</a> ({r.customer_name}, {r.paidOff ? "paid off" : `balloon ${fmtUSD(r.balance)}`})</span>)}</div>}
       <div className="kpis">
         <Kpi label="Active rentals" value={o.active} href="/rentals" />
         <Kpi label={`Billable in ${monthLabel(month)}`} value={o.billable} />
