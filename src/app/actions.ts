@@ -27,6 +27,7 @@ import { tx } from "@/lib/db";
 import { acceptQuote, addQuoteLine, assignReservationUnit, cancelReservation, cancelTicket, completeTicket, convertReservation, createQuote, createReservation, declineQuote, markQuoteSent, removeQuoteLine, scheduleTicket } from "@/lib/services/dispatch";
 import { addWorkOrderLine, cancelWorkOrder, completeWorkOrder, createServiceInterval, createWorkOrder, linkWorkOrderRental, removeWorkOrderLine, setIntervalActive, updateWorkOrder } from "@/lib/services/shop";
 import { fmtDate } from "@/lib/dates";
+import { cancelPurchaseOption, exercisePurchaseOption, setUpPurchaseOption } from "@/lib/services/rent-to-own";
 import { disconnectQbo, kickQboSync, retryQboJob, runQboSyncNow, setQboMapping, updateQboSettings } from "@/lib/services/quickbooks";
 
 const str = (fd: FormData, k: string) => { const v = fd.get(k); return typeof v === "string" ? v : ""; };
@@ -624,4 +625,21 @@ export async function qboSyncNowAction(fd: FormData) {
 }
 export async function qboRetryAction(fd: FormData) {
   await run(fd, "/quickbooks", async (u) => { await retryQboJob(u, str(fd, "job_id")); after(kickQboSync); return "Queued to try again."; });
+}
+
+// ───────── Rent-to-own
+export async function setUpRtoAction(fd: FormData) {
+  await run(fd, "/rentals", async (u) => {
+    const o = await setUpPurchaseOption(u, str(fd, "line_id"), { purchase_price: str(fd, "purchase_price"), credit_percent: str(fd, "credit_percent"), term_months: str(fd, "term_months"), starts_on: str(fd, "starts_on"), notes: str(fd, "notes") });
+    return `Rent-to-own saved: ${o.term_months} months, ending ${fmtDate(o.ends_on)}.`;
+  });
+}
+export async function cancelRtoAction(fd: FormData) {
+  await run(fd, "/rentals", async (u) => { await cancelPurchaseOption(u, str(fd, "line_id"), str(fd, "reason")); return "Rent-to-own cancelled. The rental itself is unchanged."; });
+}
+export async function exerciseRtoAction(fd: FormData) {
+  await run(fd, "/rentals", async (u) => {
+    const sale = await exercisePurchaseOption(u, str(fd, "line_id"));
+    return { to: `/sales/${sale.id}`, msg: "Rental ended and a draft sale created for the price less the rent credit. Check the tax and details, then finalize it." };
+  });
 }

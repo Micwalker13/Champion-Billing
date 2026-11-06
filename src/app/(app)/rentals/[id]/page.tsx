@@ -15,6 +15,7 @@ import { availableUnits, exchangesForLine, listYards } from "@/lib/services/inve
 import { TICKET_STATUS_LABELS, listTickets } from "@/lib/services/dispatch";
 import { FEE_CATEGORY_LABELS, applicableFees, isExempt, pctLabel, rateOn } from "@/lib/fees";
 import { feeOverrideAction, removeFeeOverrideAction } from "../../../actions";
+import { RentToOwnCard } from "@/components/rent-to-own-card";
 
 export default async function RentalPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<Record<string, string>> }) {
   const user = await requireUser();
@@ -139,6 +140,8 @@ export default async function RentalPage({ params, searchParams }: { params: Pro
           </tr>)}</tbody>
         </table>{!history.length && <Empty>No POs assigned yet.</Empty>}</div>
       </div>
+
+      <RentToOwnCard lineId={id} lineStatus={line.status} onRentDate={line.on_rent_date} canManage={can(user, "approve_invoice")} back={back} />
 
       <div className="card">
         <h2>Invoices for this rental</h2>
