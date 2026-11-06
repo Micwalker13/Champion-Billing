@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { AppError, Db, audit, one, pool, q, tx } from "../db";
+import { exemptionLabel, taxExemptionFor } from "./tax-exempt";
 import { SessionUser, requirePerm } from "../permissions";
 import { BILLING_METHOD_LABELS, OvertimeResult, ProrationNotApprovedError, RateBasisMismatchError, billedPeriodFor, computeOvertime, computeRentalCharge, computeTax, lastBillableDay } from "../billing";
 import { D, cents, dec, money } from "../money";
@@ -127,15 +128,17 @@ export function calculatePeriod(ctx: LineContext, period: { period_start: string
     lines.push({ kind: "fee", description: f.description, quantity: "1.0000", unit: "each", unit_price: dec(f.amount).toFixed(4), amount: money(f.amount), taxable: f.taxable });
   }
   const subtotal = lines.reduce((s, l) => s.add(l.amount), new D(0));
-  const taxable = lines.filter((l) => l.taxable).reduce((s, l) => s.add(l.amount), new D(0));
-  const taxRate = dec(ctx.profile.tax_rate).toFixed(5);
+  // A sales tax exemption certificate (ag, resale, interstate) covering the period start: no sales tax.
+  const exempt = taxExemptionFor(ctx.taxExemptions, ctx.contract.id, billed.start);
+  const taxable = exempt ? new D(0) : lines.filter((l) => l.taxable).reduce((s, l) => s.add(l.amount), new D(0));
+  const taxRate = exempt ? "0.00000" : dec(ctx.profile.tax_rate).toFixed(5);
   const tax = computeTax(taxable, taxRate);
   const total = cents(subtotal.add(tax));
   return {
     lines, subtotal: money(subtotal), taxable_amount: money(taxable), tax_rate: taxRate, tax_amount: tax, total: total.toFixed(2), oneTimeFeeIds,
     calc: { method: ctx.method, rate_basis: ctx.rateBasis, rate: ctx.line.rate_amount, proration_policy: ctx.profile.proration_policy,
       billed_days: rc.billedDays, period_days: rc.periodDays, partial: rc.isPartial, nominal: bp.nominal, explanation: rc.explanation,
-      overtime, rdw, fees: feeNotes, fuel_gallons: gallons.toFixed(1), fuel_unpriced: gallons.gt(0) && !p.fuel_price_per_gallon },
+      overtime, rdw, fees: feeNotes, tax_exempt: exempt ? { id: exempt.id, reason: exempt.reason, certificate_number: exempt.certificate_number, label: exemptionLabel(exempt) } : null, fuel_gallons: gallons.toFixed(1), fuel_unpriced: gallons.gt(0) && !p.fuel_price_per_gallon },
   };
 }
 
@@ -157,7 +160,10 @@ function buildSnapshot(ctx: LineContext, company: any, assignment: any | null, p
     po: assignment ? { number: assignment.po_number, assignment_id: assignment.id, estimated_total: assignment.estimated_total } : null,
     period: { start: period.period_start, end: period.period_end, billing_method: BILLING_METHOD_LABELS[ctx.method] },
     terms: { days: ctx.contract.payment_terms_days ?? ctx.profile.payment_terms_days, label: ctx.contract.payment_terms_days ? `Net ${ctx.contract.payment_terms_days}` : ctx.profile.payment_terms_label },
-    tax: { rate: ctx.profile.tax_rate, is_placeholder: ctx.profile.tax_rate_is_placeholder },
+    tax: (() => {
+      const x = taxExemptionFor(ctx.taxExemptions, ctx.contract.id, period.period_start);
+      return x ? { rate: "0", is_placeholder: false, exempt: exemptionLabel(x) } : { rate: ctx.profile.tax_rate, is_placeholder: ctx.profile.tax_rate_is_placeholder };
+    })(),
   };
 }
 

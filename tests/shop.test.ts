@@ -5,6 +5,7 @@ import { SessionUser } from "@/lib/permissions";
 import { createEquipment } from "@/lib/services/records";
 import { addWorkOrderLine, cancelWorkOrder, completeWorkOrder, createServiceInterval, createWorkOrder, linkWorkOrderRental, removeWorkOrderLine, serviceDue, workOrderDetail } from "@/lib/services/shop";
 import { RPM_SAMPLE_UNITS } from "@/lib/sample-data";
+import { todayCentral } from "@/lib/dates";
 import { lineForUnit, resetDb, userByRole } from "./helpers";
 
 let manager: SessionUser, clerk: SessionUser, viewer: SessionUser;
@@ -84,8 +85,10 @@ describe("Service reminders", () => {
     expect((await serviceDue({ onlyDue: true }, undefined, "2026-12-01")).map((r: any) => r.name)).toEqual(["Annual inspection", "250-hour service"]);
 
     const wo = await createWorkOrder(clerk, { unit_number: "SHOP01", kind: "service", complaint: "250-hour service", service_interval_id: s250.id, hours_in: "1215.0" });
-    expect((await serviceDue({ equipmentId: id }, undefined, "2026-11-05")).find((r: any) => r.id === s250.id)!.open_wo).toBe(wo.wo_number);
-    await completeWorkOrder(clerk, wo.id, { completed_on: "2026-11-05", correction: "Oil, filters, grease", hours_out: "1216.0" });
-    expect((await serviceDue({ equipmentId: id }, undefined, "2026-11-05")).find((r: any) => r.id === s250.id)).toMatchObject({ status: "ok", due_at_hours: "1466.0", last_done_on: "2026-11-05" });
+    // The work order opens today, so it is completed today (a fixed date here broke once the clock passed it).
+    const done = todayCentral();
+    expect((await serviceDue({ equipmentId: id }, undefined, done)).find((r: any) => r.id === s250.id)!.open_wo).toBe(wo.wo_number);
+    await completeWorkOrder(clerk, wo.id, { completed_on: done, correction: "Oil, filters, grease", hours_out: "1216.0" });
+    expect((await serviceDue({ equipmentId: id }, undefined, done)).find((r: any) => r.id === s250.id)).toMatchObject({ status: "ok", due_at_hours: "1466.0", last_done_on: done });
   });
 });

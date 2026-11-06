@@ -19,6 +19,7 @@ const MATRIX = {
   submit_invoice: ["admin", "billing_manager", "billing_clerk"],
   approve_invoice: ["admin", "billing_manager"],
   override_validation: ["admin", "billing_manager"],
+  manage_tax_exempt: ["admin", "billing_manager"],
   issue_invoice: ["admin", "billing_manager"],
   void_invoice: ["admin", "billing_manager"],
   record_payment: ["admin", "billing_manager", "billing_clerk"],

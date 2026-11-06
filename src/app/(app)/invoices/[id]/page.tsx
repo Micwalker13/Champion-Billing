@@ -87,7 +87,7 @@ export default async function InvoicePage({ params, searchParams }: { params: Pr
           <tbody>{lines.map((l: any) => <tr key={l.id}><td>{l.description}</td><td className="num">{Number(l.quantity).toString()} {l.unit}</td><td className="num">{fmtUSD(l.unit_price)}</td><td className="num">{fmtUSD(l.amount)}</td><td>{l.taxable ? "Yes" : "No"}</td></tr>)}</tbody>
           <tfoot>
             <tr><td colSpan={3} className="right">Subtotal</td><td className="num">{fmtUSD(inv.subtotal)}</td><td /></tr>
-            <tr><td colSpan={3} className="right">Tax ({(Number(inv.tax_rate) * 100).toFixed(3).replace(/\.?0+$/, "")}% on {fmtUSD(inv.taxable_amount)}){s.tax?.is_placeholder && <span className="badge b-warn" style={{ marginLeft: 6 }}>Placeholder rate</span>}</td><td className="num">{fmtUSD(inv.tax_amount)}</td><td /></tr>
+            <tr><td colSpan={3} className="right">{s.tax?.exempt ? <>Sales tax exempt ({s.tax.exempt})</> : <>Tax ({(Number(inv.tax_rate) * 100).toFixed(3).replace(/\.?0+$/, "")}% on {fmtUSD(inv.taxable_amount)})</>}{s.tax?.is_placeholder && <span className="badge b-warn" style={{ marginLeft: 6 }}>Placeholder rate</span>}</td><td className="num">{fmtUSD(inv.tax_amount)}</td><td /></tr>
             <tr><td colSpan={3} className="right"><strong>Total</strong></td><td className="num"><strong>{fmtUSD(inv.total)}</strong></td><td /></tr>
             {Number(inv.amount_paid) > 0 && <tr><td colSpan={3} className="right">Paid</td><td className="num">{fmtUSD(inv.amount_paid)}</td><td /></tr>}
           </tfoot>

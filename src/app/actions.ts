@@ -27,6 +27,7 @@ import { tx } from "@/lib/db";
 import { acceptQuote, addQuoteLine, assignReservationUnit, cancelReservation, cancelTicket, completeTicket, convertReservation, createQuote, createReservation, declineQuote, markQuoteSent, removeQuoteLine, scheduleTicket } from "@/lib/services/dispatch";
 import { addWorkOrderLine, cancelWorkOrder, completeWorkOrder, createServiceInterval, createWorkOrder, linkWorkOrderRental, removeWorkOrderLine, setIntervalActive, updateWorkOrder } from "@/lib/services/shop";
 import { fmtDate } from "@/lib/dates";
+import { addTaxExemption, removeTaxExemption } from "@/lib/services/tax-exempt";
 import { disconnectQbo, kickQboSync, retryQboJob, runQboSyncNow, setQboMapping, updateQboSettings } from "@/lib/services/quickbooks";
 
 const str = (fd: FormData, k: string) => { const v = fd.get(k); return typeof v === "string" ? v : ""; };
@@ -624,4 +625,18 @@ export async function qboSyncNowAction(fd: FormData) {
 }
 export async function qboRetryAction(fd: FormData) {
   await run(fd, "/quickbooks", async (u) => { await retryQboJob(u, str(fd, "job_id")); after(kickQboSync); return "Queued to try again."; });
+}
+
+// ───────── Sales tax exemptions
+export async function addTaxExemptionAction(fd: FormData) {
+  await run(fd, "/customers", async (u) => {
+    const f = fd.get("certificate");
+    const file = f instanceof File && f.size > 0 ? { filename: f.name, mime: f.type, content: Buffer.from(await f.arrayBuffer()) } : null;
+    await addTaxExemption(u, str(fd, "customer_id"), { reason: str(fd, "reason"), certificate_number: str(fd, "certificate_number"), contract_id: str(fd, "contract_id") || null,
+      effective_from: str(fd, "effective_from"), effective_to: str(fd, "effective_to") || null, notes: str(fd, "notes"), file });
+    return "Sales tax exemption saved. Draft invoices drop the sales tax when they are recalculated; finished invoices are unchanged.";
+  });
+}
+export async function removeTaxExemptionAction(fd: FormData) {
+  await run(fd, "/customers", async (u) => { await removeTaxExemption(u, str(fd, "exemption_id"), str(fd, "reason")); return "Exemption removed. New and recalculated draft invoices charge sales tax again."; });
 }
